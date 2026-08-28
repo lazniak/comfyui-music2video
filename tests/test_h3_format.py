@@ -165,6 +165,22 @@ def test_field_labels_echoed_by_the_model_are_stripped():
     assert text.rstrip().endswith("non_diegetic_music: N/A")
 
 
+def test_labels_written_with_spaces_are_stripped_too():
+    shot = make_shot(
+        diegetic_sound="Overall soundscape: wind crosses the open ground",
+        soundscape="N/A",
+    )
+    text = render_i2va(shot)
+    assert "Overall soundscape:" not in text.split("overall_soundscape:")[0]
+    # an N/A soundscape falls back to the diegetic description, never to N/A
+    assert "\n\noverall_soundscape: Wind crosses the open ground." in text
+
+
+def test_soundscape_never_degrades_to_na():
+    text = render_i2va(make_shot(soundscape="", diegetic_sound=""))
+    assert "\n\noverall_soundscape: Room tone continues quietly" in text
+
+
 def test_schema_noise_is_stripped_from_the_speaker():
     shot = make_shot(
         speakers=[

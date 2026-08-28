@@ -116,10 +116,20 @@ SHOT_FIELD_LABELS: tuple[str, ...] = FIELD_LABELS + (
     "style",
 )
 
-_LEADING_LABEL_RE = re.compile(r"^\s*(?:" + "|".join(SHOT_FIELD_LABELS) + r")\s*:\s*", re.IGNORECASE)
-_EMBEDDED_LABEL_RE = re.compile(r"(?:^|[\s;.,])(?:" + "|".join(FIELD_LABELS) + r")\s*:", re.IGNORECASE)
+def _label_alternation(labels: tuple[str, ...]) -> str:
+    """Match a field name however the model spelled it: underscore, space or hyphen."""
+    return "|".join(r"[_\s-]*".join(re.escape(part) for part in label.split("_")) for label in labels)
+
+
+_LEADING_LABEL_RE = re.compile(r"^\s*(?:" + _label_alternation(SHOT_FIELD_LABELS) + r")\s*:\s*", re.IGNORECASE)
+_EMBEDDED_LABEL_RE = re.compile(
+    r"(?:^|[\s;.,])(?:" + _label_alternation(FIELD_LABELS) + r")\s*:", re.IGNORECASE
+)
 #: enum-like fields whose value is noise inside prose ("Dialogue_mode: sung")
-_ENUM_PAIR_RE = re.compile(r"\b(?:dialogue_mode|dialogue|shot|subjects)\s*:\s*\S+\s*", re.IGNORECASE)
+_ENUM_PAIR_RE = re.compile(
+    r"\b(?:" + _label_alternation(("dialogue_mode", "dialogue", "shot", "subjects")) + r")\s*:\s*\S+\s*",
+    re.IGNORECASE,
+)
 _LEADING_MODE_RE = re.compile(r"^(?:sung|spoken|voiceover|none)\b[\s,:;-]*", re.IGNORECASE)
 
 _LABEL_RE = re.compile(r"<(Subject|Picture|Video|Audio)\s+(\d+)>")
@@ -335,10 +345,13 @@ def _render_cuts(cuts: list[Cut], duration: float, start_index: int) -> str:
 
 
 def _soundscape(shot: H3Shot) -> str:
+    """H3 allows N/A here only for deliberate silence, so always fall back to prose."""
     text = strip_field_labels(shot.soundscape)
-    if not text:
+    if not text or text.upper().strip(".") == "N/A":
+        text = strip_field_labels(shot.diegetic_sound)
+    if not text or text.upper().strip(".") == "N/A":
         text = "Room tone continues quietly under the action with the natural sounds of the scene."
-    return text if text.upper() == "N/A" else _end_sentence(text)
+    return _end_sentence(text)
 
 
 def _music(shot: H3Shot) -> str:

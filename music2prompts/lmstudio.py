@@ -359,7 +359,10 @@ class LMStudioClient:
                 text = self._first_message(response)
                 if self.verbose:
                     log(f"{stage}: {len(text)} chars returned")
-                return extract_json(text)
+                try:
+                    return extract_json(text)
+                except ValueError as exc:
+                    raise LMStudioError(f"{exc}; reply began: {text[:200]!r}") from exc
             except Exception as exc:
                 last_error = exc
                 if attempt < attempts - 1:
