@@ -12,7 +12,6 @@ import io as _io
 import json
 import logging
 import re
-import time
 from typing import Any, Iterable, Iterator, Sequence
 
 LOGGER = logging.getLogger("music2prompts")
@@ -39,23 +38,6 @@ def chunked(items: Sequence[Any], size: int) -> Iterator[list[Any]]:
     size = max(1, int(size))
     for start in range(0, len(items), size):
         yield list(items[start : start + size])
-
-
-class Stopwatch:
-    """Context manager that logs how long a stage took."""
-
-    def __init__(self, label: str, verbose: bool = False) -> None:
-        self.label = label
-        self.verbose = verbose
-        self._start = 0.0
-
-    def __enter__(self) -> "Stopwatch":
-        self._start = time.perf_counter()
-        return self
-
-    def __exit__(self, *exc_info: Any) -> None:
-        if self.verbose:
-            log(f"{self.label} took {time.perf_counter() - self._start:.1f}s")
 
 
 # --------------------------------------------------------------------------- audio

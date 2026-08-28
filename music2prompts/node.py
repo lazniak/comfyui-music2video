@@ -14,7 +14,7 @@ from .h3_format import H3Shot, Speaker, Subject, render_i2va, render_ref2va
 from .llm_stages import StageRunner, load_h3_guide
 from .lmstudio import DEFAULT_URL, FALLBACK_MODELS, LMStudioClient
 from .shots import ShotSlot, attach_lyrics, plan_shots
-from .util import PREFIX, as_list, audio_to_mono, first_str, image_tensor_to_data_uri, log, warn
+from .util import as_list, audio_to_mono, first_str, image_tensor_to_data_uri, log, warn
 
 ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]
 DEVICES = ["auto", "cuda:0", "cuda:1", "cpu"]
