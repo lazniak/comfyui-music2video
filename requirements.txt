@@ -1,0 +1,11 @@
+# Everything below is already part of a standard ComfyUI install.
+# The node adds no hard dependency of its own.
+requests
+numpy
+scipy
+transformers
+huggingface_hub
+
+# Optional: better beat/section detection. Without it the node uses a
+# numpy/scipy fallback that needs no extra install.
+# librosa

@@ -1,0 +1,29 @@
+[project]
+name = "comfyui-music2prompts"
+version = "0.1.0"
+description = "Turn a music track into image prompts and MiniMax H3 video prompts, fully locally (LM Studio + Whisper large-v3 + librosa). Generates no images or video."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "requests",
+    "numpy",
+    "scipy",
+    "transformers",
+    "huggingface_hub",
+]
+
+[project.optional-dependencies]
+better-dsp = ["librosa"]
+
+[project.urls]
+Repository = "https://github.com/lazniak/comfyui-music2prompts"
+
+[tool.comfy]
+PublisherId = "lazniak"
+DisplayName = "Music → Prompts (LM Studio + Whisper)"
+Icon = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
