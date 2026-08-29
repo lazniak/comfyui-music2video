@@ -6,8 +6,11 @@ twelve of them. Each result is written to ComfyUI's temp folder as soon as it la
 and announced over the websocket the frontend is already connected to; the node's
 gallery widget picks the event up and shows it.
 
-The same entries are returned in the node's ``ui`` payload at the end, so the gallery
-survives a page reload - that is how ComfyUI's own preview nodes persist.
+The same entries are returned in the node's ``ui`` payload at the end, which is what
+refills the gallery when a finished job is reopened from the queue sidebar. It does not
+survive a plain reload: node previews live only in the frontend's memory, and ComfyUI
+wipes its temp folder on the next start. The results themselves come back on the node's
+IMAGE and VIDEO outputs.
 """
 
 from __future__ import annotations
@@ -113,7 +116,7 @@ class PreviewFeed:
         return found
 
     def ui(self) -> dict:
-        """The payload that keeps the gallery filled after a page reload."""
+        """The payload that refills the gallery when the finished job is reopened."""
         return {"m2p_preview": list(self.items)} if self.items else {}
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

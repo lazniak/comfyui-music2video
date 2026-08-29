@@ -101,8 +101,11 @@ outright).
   the run: the failing entry is logged and skipped, everything else still comes back.
 * `live_preview` (on by default) shows each image and clip **inside the node the moment it is
   rendered**, with arrows to page back and forth - a batch of twelve shots takes minutes, and this is
-  what lets you spot a bad prompt at shot 1 instead of paying for the rest. The gallery survives a
-  page reload and disappears again on the next run.
+  what lets you spot a bad prompt at shot 1 instead of paying for the rest. The gallery clears at the
+  start of the next run. It comes back if you reopen the finished job from the queue sidebar, but not
+  after a plain F5: node previews live only in the browser's memory, and the preview files sit in
+  `ComfyUI/temp/`, which is wiped when ComfyUI restarts. The real results are on the `images` /
+  `videos` outputs, and `save_rendered_video` keeps the clips in `output/`.
 * fal payloads are built from each endpoint's own published schema, so a model is sent the field
   names it actually has (`start_image_url` for Wan, `image_url` for MiniMax H3) and only the options
   it declares. Picking an image-to-video model with `image_provider = none` is refused before the run

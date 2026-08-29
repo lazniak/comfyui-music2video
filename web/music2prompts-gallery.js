@@ -13,8 +13,10 @@
  * * it stays hidden until the first result arrives, so a node that renders nothing
  *   looks exactly as it did before.
  *
- * After the run the same items come back in the node's `ui` payload, which is what
- * refills the gallery when the page is reloaded.
+ * After the run the same items come back in the node's `ui` payload, so reopening the
+ * finished job from the queue sidebar refills the gallery. A plain F5 does not: node
+ * previews live only in the frontend's memory, and the files are in the temp folder,
+ * which ComfyUI wipes on its next start.
  */
 
 import { app } from "../../scripts/app.js";
@@ -113,12 +115,22 @@ class Gallery {
     this.widget = this.node.addDOMWidget(WIDGET, "music2prompts_gallery", root, {
       hideOnZoom: false,
       getMinHeight: () => (this.widget?.hidden ? 0 : 220),
+      // options.serialize keeps the gallery out of the API prompt, where it would
+      // arrive at the node as an input nobody declared
+      serialize: false,
     });
-    // LGraphNode.configure walks the widgets and skips `serialize === false` when it
-    // replays widgets_values - the flag lives on the widget, not in its options.
+    // ...and widget.serialize (a different flag, on the instance) is the one
+    // LGraphNode.configure reads when it replays widgets_values.
     this.widget.serialize = false;
     this.widget.serializeValue = () => undefined;
     if (!this.widget.options) this.widget.options = {};
+    // addWidget already chains node.onRemoved -> widget.onRemove; keep that and stop
+    // a clip that is still playing when the node goes away
+    const onRemove = this.widget.onRemove;
+    this.widget.onRemove = () => {
+      this.stage?.querySelector("video")?.pause();
+      onRemove?.call(this.widget);
+    };
     this.setVisible(false);
   }
 
@@ -216,13 +228,20 @@ function galleryOf(node) {
   return node._m2pGallery;
 }
 
-/** The gallery of the node the backend named, whatever type its id arrived as. */
+/** The gallery of the node the backend named, whatever type its id arrived as.
+ *
+ * Inside a subgraph the executing id is a colon path ("12:34") rather than a plain
+ * node id, and that node is not in `app.graph` at all - so the last segment is
+ * matched against the galleries that exist.
+ */
 function galleryFor(id) {
   const graph = app.graph;
   const node = graph?.getNodeById?.(Number(id)) ?? graph?.getNodeById?.(id);
   if (node?._m2pGallery) return node._m2pGallery;
+  const local = String(id).split(":").pop();
   for (const gallery of galleries) {
-    if (String(gallery.node?.id) === String(id)) return gallery;
+    const own = String(gallery.node?.id);
+    if (own === String(id) || own === local) return gallery;
   }
   return null;
 }
