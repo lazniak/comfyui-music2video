@@ -864,9 +864,12 @@ class Music2PromptsLM(io.ComfyNode):
                     f"First error: {video_errors[0] if video_errors else 'unknown'}"
                 )
             rendered_seconds = [slot.duration for slot, item in zip(slots, payloads) if item]
-            if save_rendered_video:
-                video_paths = render_module.save_videos(payloads, filename_prefix)
-                videos_out = cls._videos_from_paths(video_paths)
+            # the clips are always written out: the VIDEO output and the final cut
+            # both need real files. save_rendered_video only decides output vs temp.
+            video_paths = render_module.save_videos(
+                payloads, filename_prefix, temporary=not save_rendered_video
+            )
+            videos_out = cls._videos_from_paths(video_paths)
             log(f"{sum(1 for item in payloads if item)}/{len(video_requests)} clips rendered")
             _interrupt_check()
 

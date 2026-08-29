@@ -131,11 +131,11 @@ def image_bytes_to_tensor(payload: bytes):
     return torch.from_numpy(array)[None, ...]
 
 
-def output_directory(subfolder: str = "music2prompts") -> str:
+def output_directory(subfolder: str = "music2prompts", temporary: bool = False) -> str:
     try:
         import folder_paths  # type: ignore
 
-        base = folder_paths.get_output_directory()
+        base = folder_paths.get_temp_directory() if temporary else folder_paths.get_output_directory()
     except Exception:
         base = os.getcwd()
     path = os.path.join(base, subfolder)
@@ -482,9 +482,15 @@ def placeholder_image(aspect_ratio: str = "16:9", base: int = 512):
     return torch.zeros(1, height, width, 3, dtype=torch.float32)
 
 
-def save_videos(payloads: list[bytes | None], prefix: str = "music2prompts") -> list[str]:
-    """Write finished clips into ComfyUI's output folder; returns their paths."""
-    directory = output_directory()
+def save_videos(
+    payloads: list[bytes | None], prefix: str = "music2prompts", temporary: bool = False
+) -> list[str]:
+    """Write finished clips to disk; returns their paths.
+
+    They always land somewhere - assembling the final film needs real files - but
+    ``temporary`` puts them in ComfyUI's temp folder instead of its output folder.
+    """
+    directory = output_directory(temporary=temporary)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     paths: list[str] = []
     for index, payload in enumerate(payloads):
