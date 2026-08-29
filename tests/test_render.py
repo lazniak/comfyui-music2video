@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from music2prompts.providers import KEY_ENV  # noqa: E402
 from music2prompts.render import (  # noqa: E402
     FalClient,
     ImageRequest,
@@ -126,8 +127,8 @@ def test_unknown_provider_is_rejected():
 
 
 def test_missing_fal_key_is_a_clear_error(monkeypatch):
-    monkeypatch.delenv("FAL_KEY", raising=False)
-    monkeypatch.delenv("FAL_API_KEY", raising=False)
+    for name in KEY_ENV["fal"]:  # every accepted variable must be gone
+        monkeypatch.delenv(name, raising=False)
     with pytest.raises(RenderError, match="no fal.ai key"):
         make_media_client("fal")
 
