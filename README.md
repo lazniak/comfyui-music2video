@@ -66,6 +66,8 @@ OpenAI-compatible `/v1/chat/completions` endpoint, so older builds still work fo
 | `visual_style` | empty | Force a look; empty means the model chooses |
 | `aspect_ratio` | `16:9` | Framing used when writing image prompts |
 | `clip_seconds` | `6.0` | Target shot length — MiniMax H3 accepts 5–15 s |
+| `min_shot_seconds` | `5.0` | Shortest allowed shot (H3 refuses anything below 5 s) |
+| `max_shot_seconds` | `15.0` | Longest allowed shot (H3 refuses anything above 15 s) |
 | `num_shots` | `0` | `0` = derive the count from track length and pacing |
 | `creativity` | `0.7` | 0 grounded → 1 surreal |
 | `dynamicity` | `0.6` | 0 long calm shots → 1 short kinetic cutting |
@@ -97,7 +99,7 @@ OpenAI-compatible `/v1/chat/completions` endpoint, so older builds still work fo
 > `free_lmstudio_vram` (on by default) unloads the LM Studio model before Whisper runs, because one
 > 11 GB card cannot hold both. `whisper-large-v3-turbo` is much lighter if you prefer speed.
 
-**Music & shots** — `analyze_music`, `snap_cuts_to_beats`, `min_shot_seconds`, `max_shot_seconds`.
+**Music & shots** — `analyze_music`, `snap_cuts_to_beats`, `audio_clip_padding`.
 
 **Prompting** — `max_subjects`, `negative_prompt_base`, `include_dialogue`, `h3_style_directive`.
 
@@ -120,9 +122,10 @@ Ten of the twelve outputs are **lists**. Wire them into any node that iterates a
 | 7 | `shot_index` | shots | 1…N |
 | 8 | `start_times` | shots | Seconds |
 | 9 | `end_times` | shots | Seconds |
-| 10 | `durations` | shots | Seconds, always inside the 5–15 s H3 window |
-| 11 | `transcript` | — | Full transcription (empty for instrumentals) |
-| 12 | `analysis_json` | — | Everything: BPM, beats, sections, treatment, art direction, subject bible, per-shot fields |
+| 10 | `durations` | shots | Seconds, inside the `min_shot_seconds`…`max_shot_seconds` window |
+| 11 | `audio_clips` | shots | **AUDIO** cut sample-accurately to each shot — feed straight into lipsync |
+| 12 | `transcript` | — | Full transcription (empty for instrumentals) |
+| 13 | `analysis_json` | — | Everything: BPM, beats, sections, treatment, art direction, subject bible, per-shot fields |
 
 ### Wiring examples
 
@@ -134,6 +137,12 @@ Ten of the twelve outputs are **lists**. Wire them into any node that iterates a
 * **MiniMax H3, reference-to-video** → generate the subject references from
   `image_prompts_reference`, feed them as media, and use `video_prompts_ref2va[i]` with
   `mode = reference`.
+* **Lipsync / audio-driven video** → `audio_clips[i]` is the exact slice of the track between
+  `start_times[i]` and `end_times[i]`, at the original sample rate and channel count, so it lines up
+  with the shot it belongs to. Wire it into any audio-driven node (S2V, OmniHuman, talking-head,
+  `PreviewAudio`, `SaveAudio`) alongside `image_prompts_start[i]` for the same shot. Set the shot
+  length the lipsync model expects with `min_shot_seconds` / `max_shot_seconds`, and use the advanced
+  `audio_clip_padding` if a model clips the first or last syllable.
 
 ---
 
@@ -203,7 +212,8 @@ python tests/run_pipeline_check.py
 * Whisper large-v3 needs ≈2.9 GB VRAM in fp16 for the weights and up to ~7 GB during word-timestamp
   alignment; `free_comfy_vram` and `free_lmstudio_vram` make room before it loads.
 * fp16 only on GPU (bf16 is deliberately not used — Turing cards do not support it); CPU forces fp32.
-* Shots always tile the whole track with no gaps, and every shot stays inside the 5–15 s window
-  MiniMax H3 accepts.
+* Shots always tile the whole track with no gaps, and every shot stays inside the
+  `min_shot_seconds`…`max_shot_seconds` window (5–15 s by default, which is what MiniMax H3 accepts).
+  `audio_clips` tile the track the same way, so concatenating them reproduces the input audio.
 * Prompts are always written in English; lyrics, dialogue and on-screen text keep their original
   language.

@@ -40,6 +40,8 @@ def run_pipeline(**overrides):
         visual_style="",
         aspect_ratio="16:9",
         clip_seconds=6.0,
+        min_shot_seconds=5.0,
+        max_shot_seconds=15.0,
         num_shots=0,
         creativity=0.7,
         dynamicity=0.6,
@@ -69,12 +71,13 @@ def check_lists_are_aligned(result) -> None:
         starts,
         ends,
         durations,
+        audio_clips,
         transcript,
         analysis_json,
     ) = result.args
     count = len(indices)
     assert count >= 3, f"expected several shots, got {count}"
-    for series in (start_frames, i2va, ref2va, negatives, starts, ends, durations):
+    for series in (start_frames, i2va, ref2va, negatives, starts, ends, durations, audio_clips):
         assert len(series) == count, "shot-aligned outputs must have equal length"
     assert indices == list(range(1, count + 1))
     assert len(reference_prompts) == len(subject_names) == len(SUBJECTS)
@@ -129,6 +132,22 @@ def check_negatives(result) -> None:
     assert "daylight" in negatives[0]
 
 
+def check_audio_clips(result) -> None:
+    starts, ends, clips = result.args[7], result.args[8], result.args[10]
+    sample_rate = clips[0]["sample_rate"]
+    assert sample_rate == 22050, f"clips must keep the source rate, got {sample_rate}"
+    total = 0
+    for start, end, clip in zip(starts, ends, clips):
+        waveform = clip["waveform"]
+        assert waveform.ndim == 3, "AUDIO waveform must be [batch, channels, samples]"
+        expected = round(end * sample_rate) - round(start * sample_rate)
+        assert abs(waveform.shape[-1] - expected) <= 1, (
+            f"clip {start}-{end}s has {waveform.shape[-1]} samples, expected {expected}"
+        )
+        total += waveform.shape[-1]
+    assert abs(total - round(ends[-1] * sample_rate)) <= len(clips), "clips must tile the track"
+
+
 CHECKS = {
     "lists_are_aligned": check_lists_are_aligned,
     "timing": check_timing,
@@ -136,6 +155,7 @@ CHECKS = {
     "ref2va_format": check_ref2va_format,
     "image_prompts": check_image_prompts,
     "negatives": check_negatives,
+    "audio_clips": check_audio_clips,
 }
 
 
@@ -157,6 +177,26 @@ def main() -> int:
     except AssertionError:
         failures += 1
         print(f"  FAIL num_shots_override: got {len(forced.args[6])} shots")
+
+    long_shots = run_pipeline(min_shot_seconds=10.0, max_shot_seconds=14.0, clip_seconds=12.0)
+    try:
+        assert all(10.0 - 0.01 <= value <= 14.0 + 0.01 for value in long_shots.args[9]), long_shots.args[9]
+        print("  ok   custom_min_max_shot_length")
+    except AssertionError as exc:
+        failures += 1
+        print(f"  FAIL custom_min_max_shot_length: {exc}")
+
+    padded = run_pipeline(audio_clip_padding=0.25)
+    try:
+        rate = padded.args[10][1]["sample_rate"]
+        plain_len = round((padded.args[8][1] - padded.args[7][1]) * rate)
+        grown = padded.args[10][1]["waveform"].shape[-1] - plain_len
+        # independent rounding of each edge can differ by a sample
+        assert abs(grown - round(0.5 * rate)) <= 1, f"padding grew the clip by {grown} samples"
+        print("  ok   audio_clip_padding")
+    except AssertionError as exc:
+        failures += 1
+        print(f"  FAIL audio_clip_padding: {exc}")
 
     print("\n--- sample I2VA prompt ---")
     print(result.args[3][0])

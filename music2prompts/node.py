@@ -14,7 +14,7 @@ from .h3_format import H3Shot, Speaker, Subject, render_i2va, render_ref2va
 from .llm_stages import StageRunner, load_h3_guide
 from .lmstudio import DEFAULT_URL, FALLBACK_MODELS, LMStudioClient
 from .shots import ShotSlot, attach_lyrics, plan_shots
-from .util import as_list, audio_to_mono, first_str, image_tensor_to_data_uri, log, warn
+from .util import as_list, audio_to_mono, first_str, image_tensor_to_data_uri, log, slice_audio, warn
 
 ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]
 DEVICES = ["auto", "cuda:0", "cuda:1", "cpu"]
@@ -84,10 +84,18 @@ class Music2PromptsLM(io.ComfyNode):
                 io.Float.Input(
                     "clip_seconds",
                     default=6.0,
-                    min=5.0,
-                    max=15.0,
+                    min=1.0,
+                    max=60.0,
                     step=0.5,
                     tooltip="Target length of one shot. MiniMax H3 accepts 5-15 s per clip.",
+                ),
+                io.Float.Input(
+                    "min_shot_seconds", default=5.0, min=0.5, max=60.0, step=0.5,
+                    tooltip="Shortest allowed shot. MiniMax H3 will not accept anything under 5 s.",
+                ),
+                io.Float.Input(
+                    "max_shot_seconds", default=15.0, min=1.0, max=60.0, step=0.5,
+                    tooltip="Longest allowed shot. MiniMax H3 will not accept anything over 15 s.",
                 ),
                 io.Int.Input(
                     "num_shots",
@@ -245,12 +253,11 @@ class Music2PromptsLM(io.ComfyNode):
                     tooltip="Move shot boundaries onto the nearest beat or section edge.",
                 ),
                 io.Float.Input(
-                    "min_shot_seconds", default=5.0, min=1.0, max=15.0, step=0.5, advanced=True,
-                    tooltip="Shortest allowed shot (MiniMax H3 minimum is 5 s).",
-                ),
-                io.Float.Input(
-                    "max_shot_seconds", default=15.0, min=2.0, max=15.0, step=0.5, advanced=True,
-                    tooltip="Longest allowed shot (MiniMax H3 maximum is 15 s).",
+                    "audio_clip_padding", default=0.0, min=0.0, max=2.0, step=0.05, advanced=True,
+                    tooltip=(
+                        "Widen every audio clip by this many seconds on both sides. 0 keeps the cut "
+                        "sample-accurate against the shot boundaries (what lipsync wants)."
+                    ),
                 ),
                 io.Int.Input(
                     "max_subjects", default=6, min=0, max=16, advanced=True,
@@ -296,6 +303,7 @@ class Music2PromptsLM(io.ComfyNode):
                 io.Float.Output(display_name="start_times", is_output_list=True),
                 io.Float.Output(display_name="end_times", is_output_list=True),
                 io.Float.Output(display_name="durations", is_output_list=True),
+                io.Audio.Output(display_name="audio_clips", is_output_list=True),
                 io.String.Output(display_name="transcript"),
                 io.String.Output(display_name="analysis_json"),
             ],
@@ -312,6 +320,8 @@ class Music2PromptsLM(io.ComfyNode):
         visual_style: str,
         aspect_ratio: str,
         clip_seconds: float,
+        min_shot_seconds: float,
+        max_shot_seconds: float,
         num_shots: int,
         creativity: float,
         dynamicity: float,
@@ -345,8 +355,7 @@ class Music2PromptsLM(io.ComfyNode):
         free_lmstudio_vram: bool = True,
         analyze_music: bool = True,
         snap_cuts_to_beats: bool = True,
-        min_shot_seconds: float = 5.0,
-        max_shot_seconds: float = 15.0,
+        audio_clip_padding: float = 0.0,
         max_subjects: int = 6,
         negative_prompt_base: str = DEFAULT_NEGATIVE,
         include_dialogue: bool = True,
@@ -501,6 +510,7 @@ class Music2PromptsLM(io.ComfyNode):
         starts: list[float] = []
         ends: list[float] = []
         durations: list[float] = []
+        audio_clips: list[dict] = []
         shots_debug: list[dict] = []
 
         for slot in slots:
@@ -518,6 +528,7 @@ class Music2PromptsLM(io.ComfyNode):
             starts.append(round(slot.start, 3))
             ends.append(round(slot.end, 3))
             durations.append(slot.duration)
+            audio_clips.append(slice_audio(audio, slot.start, slot.end, audio_clip_padding))
             shots_debug.append(
                 {
                     "shot": slot.index,
@@ -554,6 +565,9 @@ class Music2PromptsLM(io.ComfyNode):
             "settings": {
                 "lm_model": model_key,
                 "clip_seconds": clip_seconds,
+                "min_shot_seconds": min_shot_seconds,
+                "max_shot_seconds": max_shot_seconds,
+                "audio_clip_padding": audio_clip_padding,
                 "dynamicity": dynamicity,
                 "creativity": creativity,
                 "word_influence": word_influence,
@@ -576,6 +590,7 @@ class Music2PromptsLM(io.ComfyNode):
             starts,
             ends,
             durations,
+            audio_clips,
             transcription.get("text", ""),
             analysis_json,
         )

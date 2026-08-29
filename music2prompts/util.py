@@ -76,6 +76,36 @@ def audio_to_mono(audio: dict, target_sr: int | None = None) -> tuple[Any, int]:
     return array, sample_rate
 
 
+def slice_audio(audio: dict, start: float, end: float, padding: float = 0.0) -> dict:
+    """Cut ``[start, end]`` (seconds) out of a ComfyUI AUDIO dict, untouched otherwise.
+
+    The original sample rate and channel layout are preserved - these clips are
+    meant to drive lipsync, so they must stay sample-accurate against the shot
+    boundaries. ``padding`` widens the cut on both sides (clamped to the track).
+    """
+    if not isinstance(audio, dict) or "waveform" not in audio:
+        raise ValueError(f"{PREFIX} expected a ComfyUI AUDIO input (dict with 'waveform').")
+
+    waveform = audio["waveform"]
+    sample_rate = int(audio.get("sample_rate") or 44100)
+    total = int(waveform.shape[-1])
+
+    first = max(0, int(round((float(start) - padding) * sample_rate)))
+    last = min(total, int(round((float(end) + padding) * sample_rate)))
+    if last <= first:
+        last = min(total, first + 1)
+        first = max(0, last - 1)
+
+    clip = waveform[..., first:last]
+    while getattr(clip, "ndim", 3) > 3:
+        clip = clip[0]
+    while getattr(clip, "ndim", 3) < 3:
+        clip = clip[None, ...]
+    if hasattr(clip, "contiguous"):
+        clip = clip.contiguous()
+    return {"waveform": clip, "sample_rate": sample_rate}
+
+
 def resample(samples: Any, source_sr: int, target_sr: int) -> Any:
     """Resample mono audio: librosa -> scipy polyphase -> linear interpolation."""
     import numpy as np

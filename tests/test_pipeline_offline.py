@@ -19,8 +19,8 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-pytest.importorskip("comfy_api", reason="needs a ComfyUI installation on sys.path")
 pytest.importorskip("torch")
+pytest.importorskip("comfy_api", reason="needs a ComfyUI installation on sys.path")
 
 from fake_lmstudio import SUBJECTS  # noqa: E402
 from run_pipeline_check import CHECKS, run_pipeline  # noqa: E402
