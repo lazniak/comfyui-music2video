@@ -1056,17 +1056,6 @@ class Music2PromptsLM(io.ComfyNode):
                     ),
                 ),
                 io.Boolean.Input(
-                    "save_cost_report", default=True, advanced=True,
-                    tooltip=(
-                        "Write <prefix>_<stamp>_cost.json and _cost.txt next to the JSON: "
-                        "every billed call of the run with its model, what it billed and how "
-                        "the price was arrived at, plus the per-model subtotals and the total "
-                        "the node shows. The JSON also lists the assumptions behind the "
-                        "figure. Costs nothing and needs no key - the numbers come from the "
-                        "replies the providers already sent."
-                    ),
-                ),
-                io.Boolean.Input(
                     "save_transcript", default=True, advanced=True,
                     tooltip=(
                         "Write <prefix>_<stamp>_transcript.txt next to the JSON: the detected "
@@ -1104,6 +1093,20 @@ class Music2PromptsLM(io.ComfyNode):
                         "counts and every warning are printed regardless of this switch. It is "
                         "also handed to the fal and OpenRouter media clients, where it "
                         "currently produces no extra output."
+                    ),
+                ),
+io.Boolean.Input(
+                    "save_cost_report", default=True, advanced=True,
+                    tooltip=(
+                        "Write <prefix>_<stamp>_cost.json and _cost.txt next to the JSON: "
+                        "every billed call of the run with its model, what it billed and how "
+                        "the price was arrived at, plus the per-model subtotals and the total "
+                        "the node shows. The JSON also lists the assumptions behind the "
+                        "figure. Costs nothing and needs no key - the numbers come from the "
+                        "replies the providers already sent. It sits at the end of the list "
+                        "rather than beside the other save_* switches because a widget "
+                        "inserted in the middle would shift every stored value after it in "
+                        "workflows saved before it existed."
                     ),
                 ),
                 io.Image.Input(
@@ -1540,6 +1543,9 @@ class Music2PromptsLM(io.ComfyNode):
 
         # ---------------------------------------------------------- shot planning
         progress.step("planning shots")
+        clip_seconds, max_shot_seconds = cls._fit_shots_to_model(
+            clip_seconds, max_shot_seconds, video_provider if wants_video else "none", video_model
+        )
         slots = plan_shots(
             duration=duration,
             clip_seconds=clip_seconds,
@@ -2006,6 +2012,38 @@ class Music2PromptsLM(io.ComfyNode):
                 "and choose 'Refresh model lists'."
             )
         return model, keys.get(provider, "")
+
+    @staticmethod
+    def _fit_shots_to_model(
+        clip_seconds: float, max_seconds: float, provider: str, model: str
+    ) -> tuple[float, float]:
+        """Aim the shot lengths at the clip lengths the video model can actually produce.
+
+        Some endpoints offer a fixed menu - kling's is 5 or 10 seconds - and a shot that
+        falls between two entries has to be covered by the longer one, so a 6 s shot buys
+        a 10 s clip and throws four seconds away. Planning the shots on the endpoint's own
+        grid keeps the cuts where the music puts them and stops the run paying for footage
+        it will trim off.
+        """
+        if provider != "fal" or not model:
+            return clip_seconds, max_seconds
+        try:
+            offered = render_module.fal_video_durations(model)
+        except Exception:
+            return clip_seconds, max_seconds
+        if not offered:
+            return clip_seconds, max_seconds
+        # the longest length at or below what was asked for, so a shot is never planned
+        # longer than the clip that has to fill it
+        fits = [value for value in offered if value <= clip_seconds + 0.01]
+        target = fits[-1] if fits else offered[0]
+        ceiling = min(max_seconds, offered[-1])
+        if abs(target - clip_seconds) > 0.01 or ceiling < max_seconds:
+            log(
+                f"'{model}' produces {', '.join(f'{value:g}s' for value in offered)} clips; "
+                f"planning shots around {target:g}s (max {ceiling:g}s) so none is padded or wasted"
+            )
+        return target, max(target, ceiling)
 
     @staticmethod
     def _shot_audio(

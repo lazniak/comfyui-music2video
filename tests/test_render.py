@@ -174,7 +174,7 @@ def test_fal_video_uses_the_first_frame_for_image_to_video(fal):
     assert fal.video("minimax/h3/image-to-video", request) == b"mp4"
     sent = seen["payload"]
     assert sent["image_url"] == PIXEL
-    assert sent["duration"] == 6, "duration is rounded to whole seconds"
+    assert sent["duration"] == 7, "whole seconds, rounded up so the clip covers the shot"
     assert "reference_image_urls" not in sent
 
 
@@ -287,12 +287,19 @@ def test_a_model_that_must_have_an_image_says_so_instead_of_failing_at_fal():
         build_fal_video_payload("alibaba/wan-3.0-prime/image-to-video", VideoRequest(prompt="x"), WAN)
 
 
-def test_duration_is_clamped_and_matched_to_what_the_endpoint_allows():
+def test_the_clip_is_asked_to_cover_the_shot_rather_than_to_approximate_it():
+    """A clip that comes back short freezes at the cut; a long one is trimmed unseen."""
     long_shot = VideoRequest(prompt="x", seconds=14.0, first_frame=PIXEL)
-    assert build_fal_video_payload("m", long_shot, WAN)[0]["duration"] == 10
+    assert build_fal_video_payload("m", long_shot, WAN)[0]["duration"] == 10, "the endpoint's ceiling"
     assert build_fal_video_payload("m", long_shot, KLING)[0]["duration"] == "10", "enum durations are strings"
-    short = VideoRequest(prompt="x", seconds=6.0, first_frame=PIXEL)
-    assert build_fal_video_payload("m", short, KLING)[0]["duration"] == "5", "nearest allowed value"
+    six = VideoRequest(prompt="x", seconds=6.0, first_frame=PIXEL)
+    assert build_fal_video_payload("m", six, WAN)[0]["duration"] == 6
+    assert build_fal_video_payload("m", six, KLING)[0]["duration"] == "10", (
+        "5 would leave a second of frozen frame; the shot planner is what keeps a run "
+        "off this cliff, by aiming the shots at the lengths the endpoint can produce"
+    )
+    barely = VideoRequest(prompt="x", seconds=6.02, first_frame=PIXEL)
+    assert build_fal_video_payload("m", barely, WAN)[0]["duration"] == 6, "20 ms does not buy a second"
 
 
 def test_the_seed_respects_the_endpoints_own_range():
@@ -393,7 +400,7 @@ def test_openrouter_video_polls_until_completed(monkeypatch, openrouter):
     assert frames == [
         {"type": "image_url", "image_url": {"url": PIXEL}, "frame_type": "first_frame"}
     ]
-    assert seen["payload"]["duration"] == 7
+    assert seen["payload"]["duration"] == 8, "7.2s is asked of as 8: a short clip freezes at the cut"
 
 
 def test_openrouter_video_reports_failure(monkeypatch, openrouter):

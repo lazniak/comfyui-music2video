@@ -179,3 +179,30 @@ def test_asking_for_music_without_a_track_falls_back(clips, tmp_path):
 def test_missing_files_are_reported(tmp_path):
     with pytest.raises(video_module.VideoError, match="nothing to concatenate"):
         video_module.concat_clips(["nope.mp4"], str(tmp_path / "x.mp4"))
+
+
+# --------------------------------------------------------------------------- assembly precision
+
+
+def test_the_cuts_are_measured_from_the_running_boundary_not_shot_by_shot():
+    """Rounding each shot on its own lets one shot's error push the next cut off the beat."""
+    from fractions import Fraction
+
+    from music2prompts.video import frame_budgets
+
+    durations = [6.084, 6.037, 5.480, 6.083, 6.293, 5.805, 5.859]  # a real beat-snapped plan
+    budgets = frame_budgets(durations, Fraction(30))
+    assert sum(budgets) == round(sum(durations) * 30), "the film is exactly as long as the plan"
+    boundary = 0
+    for index, budget in enumerate(budgets):
+        boundary += budget
+        wanted = sum(durations[: index + 1]) * 30
+        assert abs(boundary - wanted) <= 0.5, "every cut sits within half a frame of its beat"
+
+
+def test_no_shot_is_left_without_a_single_frame():
+    from fractions import Fraction
+
+    from music2prompts.video import frame_budgets
+
+    assert frame_budgets([0.001, 0.001], Fraction(30)) == [1, 1]

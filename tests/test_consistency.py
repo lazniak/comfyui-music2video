@@ -281,3 +281,39 @@ def test_a_text_to_image_model_with_references_warns_instead_of_failing_quietly(
 def test_openrouter_needs_no_second_model(schemas):
     client = object()
     assert node()._frame_model("openrouter", "gemini", "", True, client) == ("gemini", client)
+
+
+# --------------------------------------------------------------------------- assembly
+
+
+def test_a_shot_is_never_asked_of_a_clip_that_cannot_cover_it(schemas):
+    """A clip shorter than its shot freezes at the cut; a longer one is trimmed unseen."""
+    from music2prompts.render import cover_duration
+
+    assert cover_duration(5.48, ["5", "10"])[0] == "10"
+    assert cover_duration(5.0, ["5", "10"])[0] == "5"
+    assert cover_duration(5.03, ["5", "10"])[0] == "5", "30 ms does not buy five more seconds"
+    assert cover_duration(6.084)[0] == 7
+    assert cover_duration(6.02)[0] == 6
+
+
+def test_an_endpoint_that_cannot_go_long_enough_says_so(schemas):
+    from music2prompts.render import cover_duration
+
+    value, shortfall = cover_duration(14.0, ["5", "10"])
+    assert value == "10" and "stops at 10s" in shortfall
+    value, shortfall = cover_duration(14.0, None, None, 10)
+    assert value == 10 and "stops at 10s" in shortfall
+
+
+def test_the_shot_plan_is_aimed_at_the_lengths_the_endpoint_can_produce(schemas):
+    schemas["kling"] = {"required": [], "properties": {"duration": {"enum": ["5", "10"]}}}
+    assert node()._fit_shots_to_model(6.0, 15.0, "fal", "kling") == (5.0, 10.0), (
+        "a 6 s shot on a 5-or-10 endpoint would buy a 10 s clip and throw four seconds away"
+    )
+
+
+def test_an_endpoint_with_a_free_duration_leaves_the_plan_alone(schemas):
+    schemas["wan"] = {"required": [], "properties": {"duration": {"minimum": 2, "maximum": 10}}}
+    assert node()._fit_shots_to_model(6.0, 15.0, "fal", "wan") == (6.0, 15.0)
+    assert node()._fit_shots_to_model(6.0, 15.0, "openrouter", "any") == (6.0, 15.0)

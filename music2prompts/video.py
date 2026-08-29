@@ -75,6 +75,8 @@ def _probe(path: str) -> dict:
             "height": height,
             "rotation": rotation,
             "rate": rate,
+            # what the model actually returned, so the assembly can say what it trimmed
+            "duration": float(container.duration or 0) / 1000000.0,
             "has_audio": bool(container.streams.audio),
         }
 
@@ -238,16 +240,21 @@ def concat_clips(  # noqa: PLR0912, PLR0915 - one linear muxing pass, kept in on
         audio_stream = container.add_stream("aac", rate=audio_rate, layout=layout)
 
     frames_per_clip: list[int] = []
+    budgets = frame_budgets(clip_durations, rate) if clip_durations else []
+    held_total = 0
+    trimmed_total = 0
     written = 0
     try:
         for index, info in enumerate(infos):
-            target = None
-            if clip_durations is not None and index < len(clip_durations):
-                target = max(1, int(round(float(clip_durations[index]) * float(rate))))
-            emitted = _write_clip(
+            target = budgets[index] if index < len(budgets) else None
+            emitted, held = _write_clip(
                 container, video, info, width, height, fit, interpolation, rate, step,
                 time_base, written, target,
             )
+            held_total += held
+            if target is not None:
+                available = int(round(float(info.get("duration") or 0) * float(rate)))
+                trimmed_total += max(0, available - target)
             frames_per_clip.append(emitted)
             written += emitted
             if progress_cb:
@@ -269,10 +276,20 @@ def concat_clips(  # noqa: PLR0912, PLR0915 - one linear muxing pass, kept in on
     finally:
         container.close()
 
+    if held_total:
+        warn(
+            f"{held_total} frame(s) ({held_total * float(step):.2f}s) are a held still: those "
+            "clips came back shorter than their shots. Pick a video model whose durations "
+            "cover the shot length, or raise min_shot_seconds."
+        )
+    if trimmed_total:
+        log(f"trimmed {trimmed_total} surplus frame(s) ({trimmed_total * float(step):.2f}s) off the clip tails")
     log(f"wrote {output_path}: {written} frames, {duration:.2f}s")
     return {
         "path": output_path,
         "frames": written,
+        "held_frames": held_total,
+        "trimmed_frames": trimmed_total,
         "duration": duration,
         "width": width,
         "height": height,
@@ -282,11 +299,31 @@ def concat_clips(  # noqa: PLR0912, PLR0915 - one linear muxing pass, kept in on
     }
 
 
+def frame_budgets(durations: Sequence[float], rate: Fraction) -> list[int]:
+    """How many output frames each shot gets, measured from the running boundary.
+
+    Rounding each shot's own length independently lets the error of one leak into the
+    next: seven shots of 6.084, 6.037, 5.480 ... seconds each land up to half a frame
+    off, and the cuts drift away from the beats they were snapped to. Rounding the
+    *boundary* instead pins every cut to the nearest frame of its musical time, and the
+    budgets still add up to exactly the film's length.
+    """
+    budgets: list[int] = []
+    elapsed = Fraction(0)
+    placed = 0
+    for seconds in durations:
+        elapsed += Fraction(float(seconds)).limit_denominator(100000)
+        boundary = int(round(float(elapsed * rate)))
+        budgets.append(max(1, boundary - placed))
+        placed = boundary
+    return budgets
+
+
 def _write_clip(
     container, video, info: dict, width: int, height: int, fit: str, interpolation: str,
     rate: Fraction, step: Fraction, time_base: Fraction, offset: int, target: int | None,
-) -> int:
-    """Re-time one clip onto the output grid. Returns the number of frames emitted."""
+) -> tuple[int, int]:
+    """Re-time one clip onto the output grid. Returns (frames emitted, frames held)."""
     import av
 
     emitted = 0
@@ -337,10 +374,12 @@ def _write_clip(
         raise VideoError(f"{PREFIX} no decodable frames in {info['path']}")
     # a clip that came back shorter than its shot holds its last frame, so the film
     # stays in sync with the music instead of drifting earlier with every shot
+    held = 0
     while target is not None and emitted < target:
         _mux_frame(container, video, last_placed, offset + emitted, time_base)
         emitted += 1
-    return emitted
+        held += 1
+    return emitted, held
 
 
 def _mux_frame(container, video, frame, index: int, time_base: Fraction) -> None:

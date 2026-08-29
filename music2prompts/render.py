@@ -87,6 +87,10 @@ REFERENCE_FIELDS = (
 AUDIO_URL_FIELDS = ("audio_url", "audio", "speech_url", "voice_url")
 AUDIO_LIST_FIELDS = ("reference_audio_urls", "audio_urls")
 
+#: A shot this close to a shorter clip length settles for the shorter one, so a
+#: 6.001 s shot does not buy a whole extra second of video.
+DURATION_SLACK = 0.06
+
 
 class RenderError(RuntimeError):
     pass
@@ -325,6 +329,24 @@ def fal_audio_field(model: str) -> str:
             continue
         return name
     return ""
+
+
+def fal_video_durations(model: str) -> list[float]:
+    """The clip lengths this endpoint will actually produce, when it says so.
+
+    Only an enum counts: an endpoint declaring ``minimum``/``maximum`` takes any whole
+    number in between, so there is no grid to aim at. Empty means "anything".
+    """
+    schema = fal_schema(model)
+    allowed = _enum_of((schema.get("properties") or {}).get("duration"))
+    lengths = []
+    for value in allowed:
+        text = str(value).strip()
+        try:
+            lengths.append(float(text))
+        except ValueError:
+            continue
+    return sorted(lengths)
 
 
 def fal_video_needs_image(model: str) -> str:
@@ -625,19 +647,11 @@ def build_fal_video_payload(
 
     if "duration" in properties or not known:
         low, high = _bounds_of(properties.get("duration"))
-        seconds = max(1, int(round(request.seconds)))
-        if low is not None:
-            seconds = max(int(low), seconds)
-        if high is not None:
-            seconds = min(int(high), seconds)
         allowed = _enum_of(properties.get("duration"))
-        if allowed:
-            numeric = [value for value in allowed if str(value).strip().lstrip("-").isdigit()]
-            if numeric:
-                closest = min(numeric, key=lambda value: abs(int(str(value)) - seconds))
-                offer("duration", closest)
-        else:
-            offer("duration", seconds)
+        seconds, shortfall = cover_duration(request.seconds, allowed, low, high)
+        if shortfall:
+            warn(f"{request.label or 'this shot'}: {shortfall}; it will hold its last frame")
+        offer("duration", seconds)
 
     expansion = (request.expansion or "").strip().lower()
     if expansion in {"minimal", "rich"}:
@@ -669,6 +683,41 @@ def build_fal_video_payload(
     # the audio is the point of the request when it is there; drop it last
     optional = [name for name in optional if name not in AUDIO_LIST_FIELDS + AUDIO_URL_FIELDS]
     return payload, tuple(optional)
+
+
+def cover_duration(seconds: float, allowed: list | None = None,
+                   low: float | None = None, high: float | None = None) -> tuple[Any, str]:
+    """The shortest length the endpoint offers that still covers the shot.
+
+    Rounding to nearest is what makes an assembly look imprecise: a clip that comes
+    back short leaves the concatenator holding its last frame, and a frozen tail at
+    the cut is plainly visible - a 5.48 s shot asked of an endpoint that offers 5 or
+    6 seconds used to come back 5, and froze for 13 frames. A clip that comes back
+    long is trimmed instead, which nobody can see. So this rounds up, and only ever
+    reports a shortfall when the endpoint simply cannot go long enough.
+    """
+    import math
+
+    wanted = max(0.0, float(seconds))
+    if allowed:
+        # the enum entry is handed back exactly as declared - several endpoints spell
+        # their durations as strings, and an int there is rejected
+        offered = sorted(
+            ((int(str(value)), value) for value in allowed if str(value).strip().lstrip("-").isdigit()),
+            key=lambda pair: pair[0],
+        )
+        if offered:
+            covering = [pair for pair in offered if pair[0] + DURATION_SLACK >= wanted]
+            if covering:
+                return covering[0][1], ""
+            longest = offered[-1]
+            return longest[1], f"{wanted:.2f}s asked of an endpoint that stops at {longest[0]}s"
+    seconds_up = max(1, math.ceil(wanted - DURATION_SLACK))
+    if low is not None:
+        seconds_up = max(int(low), seconds_up)
+    if high is not None and seconds_up > int(high):
+        return int(high), f"{wanted:.2f}s asked of an endpoint that stops at {int(high)}s"
+    return seconds_up, ""
 
 
 def _fit_seed(seed: int, prop: Any) -> int:
@@ -806,7 +855,8 @@ class OpenRouterMediaClient:
         payload: dict[str, Any] = {
             "model": model,
             "prompt": request.prompt,
-            "duration": max(1, int(round(request.seconds))),
+            # round up, never to nearest: a short clip freezes at the cut, a long one is trimmed
+            "duration": cover_duration(request.seconds)[0],
             "aspect_ratio": request.aspect_ratio,
         }
         if request.seed is not None:
