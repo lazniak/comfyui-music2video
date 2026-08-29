@@ -6,17 +6,38 @@
  * into ComfyUI's temp folder and sends one `music2prompts/preview` event per item; this
  * widget collects them and lets you page through with the controls under the media.
  *
- * Two rules govern the input handling here, both established by measurement:
+ * Three rules govern the input handling here. All three were measured; an earlier
+ * revision of this file justified the first two with a browser fact that is simply
+ * false, so the reasoning is spelled out rather than asserted.
  *
- * 1. **Navigate on `pointerdown`, never on `click`.** Inside a node the graph canvas
- *    expects to own the pointer, so hosts call `preventDefault()` on `pointerdown` to keep
- *    a drag over a widget moving the node - VideoHelperSuite does exactly that, forwarding
- *    to `app.canvas._mousedown_callback`. A cancelled `pointerdown` never produces the
- *    compatibility `click`, so an `onclick` control inside a node is dead on arrival while
- *    `pointerdown` listeners still fire.
- * 2. **Keep the controls out of the media box.** A `<video controls>` answers pointer
- *    events from its own shadow DOM, so anything floating over it competes with the play
- *    button for the same pixels. The controls sit in their own row underneath.
+ * 1. **Swallow the press before the graph sees it.** `stopPropagation` on `pointerdown`
+ *    and `mousedown` stops a node drag starting under the control, and - the part that
+ *    matters - stops an ancestor calling `setPointerCapture` between down and up.
+ *    That capture is what actually kills a `click` inside a node: litegraph's
+ *    `CanvasPointer` and the Vue node drag both take the pointer. `preventDefault()` on
+ *    `pointerdown` does *not*: it suppresses only the compatibility mouse events
+ *    (`mousedown`/`mousemove`/`mouseup`), and `click` still fires. Every working
+ *    in-node control in the ecosystem relies on exactly this - KJNodes' `hdr_preview`
+ *    and `fast_preview_batch`, mickmumpitz's `dataset_reviewer` - a plain `click`
+ *    handler plus `stopPropagation` on the press.
+ * 2. **Act on release, whichever path delivers it.** `click` is the one both a mouse
+ *    and the keyboard produce (Enter and Space on a `<button>`), so it stays the
+ *    primary path. `pointerup` acts as a fallback for a host that does swallow `click`,
+ *    and a timestamp - not a sticky flag - keeps a single press from stepping twice:
+ *    the compatibility `click` arrives in the same tick as the `pointerup` that
+ *    produced it, a keyboard `click` never does.
+ * 3. **Keep the controls out of the media box.** Not because an overlay cannot be hit:
+ *    a positioned button paints - and hit-tests - above a non-positioned `<video>` flex
+ *    item whatever the DOM order, and a `<video controls>` keeps its UA control bar
+ *    inside its own border box. Both were measured. It is that nothing in the ecosystem
+ *    overlays a control on a `<video controls>` inside a node (VideoHelperSuite turns
+ *    the native controls off entirely; core's `ImagePreview.vue` makes the media
+ *    `pointer-events: none`), and that letterboxing, small targets and Chrome's
+ *    click-to-play on the bare video area all fight an overlay for no gain.
+ *
+ * What the arrows actually did before: they were hidden outright whenever the gallery
+ * held a single item, and the end arrows used `disabled` - which eats the press
+ * silently rather than letting it through. Both are gone.
  *
  * Two more things keep the widget out of the way of the rest of the node:
  *
@@ -95,22 +116,37 @@ function viewURL(item) {
 
 /** Wire a control so that it actually works inside a node.
  *
- * `pointerdown` is the event that survives a host cancelling the default action, and
- * `stopPropagation` keeps the same press from also starting a node drag underneath. The
- * `click` path stays as a fallback for hosts that leave `pointerdown` alone, guarded so a
- * single press never runs the handler twice.
+ * The press is stopped before the graph canvas can see it - that is what keeps the node
+ * from being dragged out from under the control and keeps an ancestor from capturing the
+ * pointer, which is the one thing that would stop the `click` arriving. The action then
+ * runs on `click`, so the keyboard reaches it too.
+ *
+ * `pointerup` is a fallback for a host that swallows `click` anyway. The two are told
+ * apart by time, not by a flag: the compatibility `click` shares the `pointerup`'s tick,
+ * a keyboard `click` has no `pointerup` before it at all. A flag would go stale the first
+ * time a press is released off the control and no `click` ever comes to clear it.
  */
 function onPress(element, handler) {
+  let released = -Infinity;
+  let pressed = false;
+  const swallow = (event) => event.stopPropagation();
   element.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     event.stopPropagation();
-    element._m2pHandled = true;
+    pressed = true;
+  });
+  // the legacy canvas listens for mouse events as well as pointer ones
+  element.addEventListener("mousedown", swallow);
+  element.addEventListener("pointerup", (event) => {
+    if (event.button !== 0 || !pressed) return;
+    event.stopPropagation();
+    pressed = false;
+    released = event.timeStamp;
     handler(event);
   });
   element.addEventListener("click", (event) => {
     event.stopPropagation();
-    if (!element._m2pHandled) handler(event);
-    element._m2pHandled = false;
+    if (event.timeStamp - released > 100) handler(event);
   });
 }
 
