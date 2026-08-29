@@ -32,6 +32,7 @@ def run_pipeline(**overrides):
     from music2prompts.node import Music2PromptsLM
 
     node_module.LMStudioClient = FakeClient  # type: ignore[assignment]
+    node_module.make_llm_client = lambda provider, **kwargs: FakeClient()  # type: ignore[assignment]
 
     kwargs = dict(
         audio=make_audio(),
@@ -74,6 +75,9 @@ def check_lists_are_aligned(result) -> None:
         audio_clips,
         transcript,
         analysis_json,
+        images,
+        subject_images,
+        videos,
     ) = result.args
     count = len(indices)
     assert count >= 3, f"expected several shots, got {count}"
@@ -82,6 +86,9 @@ def check_lists_are_aligned(result) -> None:
     assert indices == list(range(1, count + 1))
     assert len(reference_prompts) == len(subject_names) == len(SUBJECTS)
     assert transcript == ""
+    assert images == [] and subject_images == [] and videos == [], (
+        "nothing may be rendered while both providers are 'none'"
+    )
     json.loads(analysis_json)
 
 
@@ -148,6 +155,13 @@ def check_audio_clips(result) -> None:
     assert abs(total - round(ends[-1] * sample_rate)) <= len(clips), "clips must tile the track"
 
 
+def check_rendering_is_off_by_default(result) -> None:
+    rendering = json.loads(result.args[12])["rendering"]
+    assert rendering["image_provider"] == "none"
+    assert rendering["video_provider"] == "none"
+    assert rendering["video_paths"] == []
+
+
 CHECKS = {
     "lists_are_aligned": check_lists_are_aligned,
     "timing": check_timing,
@@ -156,6 +170,7 @@ CHECKS = {
     "image_prompts": check_image_prompts,
     "negatives": check_negatives,
     "audio_clips": check_audio_clips,
+    "rendering_off_by_default": check_rendering_is_off_by_default,
 }
 
 

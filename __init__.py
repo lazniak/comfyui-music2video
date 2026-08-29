@@ -6,7 +6,12 @@ also be imported outside ComfyUI (tests, tooling) without blowing up.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
+
+# served to the browser: hides the model widgets of providers you did not select
+WEB_DIRECTORY = "./web"
+
+__all__ = ["WEB_DIRECTORY", "comfy_entrypoint"]
 
 
 async def comfy_entrypoint():

@@ -1,17 +1,19 @@
 # Music → Prompts (LM Studio + Whisper) — ComfyUI node
 
-Turns an audio track into **ready-to-use generation prompts**. It renders nothing itself: no images,
-no video, no cloud API, no extra UI. One node in, twelve outputs out — you wire them into whatever
-image or video model you already run in ComfyUI.
+Turns an audio track into **ready-to-use generation prompts** — and, if you want, into the images and
+clips themselves. One node in, sixteen outputs out.
 
-Everything runs locally:
+The analysis is always local and free. The prompt writing is local by default and can be moved to a
+cloud LLM. Rendering is **off by default** and only happens when you pick a provider for it.
 
 | Job | Engine |
 |---|---|
 | Lyrics + word-level timestamps | **Whisper large-v3** (transformers, GPU by default, CPU selectable) |
 | BPM, beat grid, sections, energy | **librosa** when installed, otherwise a built-in numpy/scipy fallback |
-| Treatment, art direction, shot writing | **LM Studio** (default model `google/gemma-4-e4b`) |
+| Treatment, art direction, shot writing | **LM Studio** (default, `google/gemma-4-e4b`) or **OpenRouter** / **OpenAI** / **Anthropic** |
 | MiniMax H3 prompt formatting | deterministic Python renderers — the model fills fields, the code builds the exact skeleton |
+| Optional image rendering | **fal.ai** or **OpenRouter** (`image_provider`, default `none`) |
+| Optional video rendering | **fal.ai** or **OpenRouter** (`video_provider`, default `none`) |
 
 Built on the ComfyUI **V3 node schema**, so the 30+ secondary settings collapse into the native
 *Advanced* section of the new node layout.
@@ -54,6 +56,44 @@ OpenAI-compatible `/v1/chat/completions` endpoint, so older builds still work fo
 
 ---
 
+## Providers
+
+Every provider gets **its own model dropdown**, filled in when ComfyUI starts by asking the provider
+what it serves. A small frontend script keeps only the dropdown of the provider you selected on
+screen, so `llm_provider = openrouter` shows `openrouter_model` and hides the rest.
+
+| Provider | Used for | Key | Endpoint |
+|---|---|---|---|
+| LM Studio | LLM (default) | usually none | `/v1/chat/completions` + `/api/v1/models/...` |
+| OpenRouter | LLM, images, video | `OPENROUTER_API_KEY` | `/chat/completions`, `/images`, `/videos` |
+| OpenAI | LLM | `OPENAI_API_KEY` | `/chat/completions` with strict JSON schema |
+| Anthropic | LLM | `ANTHROPIC_API_KEY` | `/v1/messages`, structured stages via forced tool use |
+| fal.ai | images, video | `FAL_KEY` (or `FAL_API_KEY`) | queue API `https://queue.fal.run/<model>` |
+
+Keys come from the node widgets first and from those environment variables when the widget is empty;
+they are never written into the outputs or into `analysis_json`.
+
+> **These are paid, per-call APIs.** LM Studio and the whole analysis are free; every other provider
+> bills you. Image and video rendering therefore stays `none` until you choose otherwise, and one
+> run renders one image per shot (plus one per subject with `render_subject_sheets`) and one clip per
+> shot. A 3-minute track cut into 6-second shots is 30 shots — check the provider's price per image
+> and per second of video before you start it.
+
+### Rendering
+
+* `image_provider` + `fal_image_model` / `openrouter_image_model` render the start frames. The result
+  arrives on the `images` output, aligned with the shots.
+* `video_provider` + `fal_video_model` / `openrouter_video_model` render the clips. With
+  `video_prompt_source = i2va` the rendered start frame is sent as the first frame; with `ref2va` the
+  rendered subject sheets are sent as references (turn on `render_subject_sheets`), which is what the
+  MiniMax H3 `reference-to-video` endpoints expect.
+* `render_concurrency` decides how many images or clips are in flight at once. Failures do not stop
+  the run: the failing entry is logged and skipped, everything else still comes back.
+* Clips are written to `ComfyUI/output/music2prompts/` and returned on the `videos` output (the
+  regular VIDEO type, so `SaveVideo` / `PreviewVideo` accept them).
+
+---
+
 ## Inputs
 
 ### Main
@@ -62,7 +102,9 @@ OpenAI-compatible `/v1/chat/completions` endpoint, so older builds still work fo
 |---|---|---|
 | `audio` | — | AUDIO from `LoadAudio` (or anything producing AUDIO) |
 | `instruction` | — | Your brief: story, mood, world, constraints |
+| `llm_provider` | `lmstudio` | `lmstudio` (local, free), `openrouter`, `openai`, `anthropic` |
 | `lm_model` | first model found | Model list is read live from the running LM Studio |
+| `openrouter_model` / `openai_model` / `anthropic_model` | first model found | One live list per cloud provider |
 | `visual_style` | empty | Force a look; empty means the model chooses |
 | `aspect_ratio` | `16:9` | Framing used when writing image prompts |
 | `clip_seconds` | `6.0` | Target shot length — MiniMax H3 accepts 5–15 s |
@@ -73,7 +115,12 @@ OpenAI-compatible `/v1/chat/completions` endpoint, so older builds still work fo
 | `dynamicity` | `0.6` | 0 long calm shots → 1 short kinetic cutting |
 | `word_influence` | `0.6` | +1 literal lyrics → −1 pure atmosphere |
 | `whisper_device` | `auto` | `auto`, `cuda:0`, `cuda:1`, `cpu` |
-| `seed` | `0` | Forwarded to LM Studio |
+| `seed` | `0` | Forwarded to the LLM and to the image/video models |
+| `image_provider` | `none` | `none`, `fal`, `openrouter` — `none` means prompts only |
+| `fal_image_model` / `openrouter_image_model` | first model found | Image model per provider |
+| `video_provider` | `none` | `none`, `fal`, `openrouter` |
+| `fal_video_model` / `openrouter_video_model` | first model found | Video model per provider |
+| `render_concurrency` | `2` | Images/clips rendered at the same time |
 | `reference_images` | optional socket | Described by the vision model and locked into every prompt |
 
 ### Advanced (collapsed by default)
@@ -99,6 +146,10 @@ OpenAI-compatible `/v1/chat/completions` endpoint, so older builds still work fo
 > `free_lmstudio_vram` (on by default) unloads the LM Studio model before Whisper runs, because one
 > 11 GB card cannot hold both. `whisper-large-v3-turbo` is much lighter if you prefer speed.
 
+**Cloud keys & rendering** — `openrouter_api_key`, `openai_api_key`, `anthropic_api_key`,
+`fal_api_key` (all empty = read from the environment), `video_prompt_source` (`i2va` / `ref2va`),
+`render_subject_sheets`, `save_rendered_video`, `render_timeout`.
+
 **Music & shots** — `analyze_music`, `snap_cuts_to_beats`, `audio_clip_padding`.
 
 **Prompting** — `max_subjects`, `negative_prompt_base`, `include_dialogue`, `h3_style_directive`.
@@ -109,7 +160,7 @@ OpenAI-compatible `/v1/chat/completions` endpoint, so older builds still work fo
 
 ## Outputs
 
-Ten of the twelve outputs are **lists**. Wire them into any node that iterates a list, or index them.
+Fourteen of the sixteen outputs are **lists** (everything except `transcript` and `analysis_json`). Wire them into any node that iterates a list, or index them.
 
 | # | Output | Aligned with | Contents |
 |---|---|---|---|
@@ -125,7 +176,10 @@ Ten of the twelve outputs are **lists**. Wire them into any node that iterates a
 | 10 | `durations` | shots | Seconds, inside the `min_shot_seconds`…`max_shot_seconds` window |
 | 11 | `audio_clips` | shots | **AUDIO** cut sample-accurately to each shot — feed straight into lipsync |
 | 12 | `transcript` | — | Full transcription (empty for instrumentals) |
-| 13 | `analysis_json` | — | Everything: BPM, beats, sections, treatment, art direction, subject bible, per-shot fields |
+| 13 | `analysis_json` | — | Everything: BPM, beats, sections, treatment, art direction, subject bible, per-shot fields, and what was rendered |
+| 14 | `images` | shots | **IMAGE** — rendered start frames (empty while `image_provider = none`) |
+| 15 | `subject_images` | subjects | **IMAGE** — rendered reference sheets (`render_subject_sheets`) |
+| 16 | `videos` | shots | **VIDEO** — rendered clips, also written to `ComfyUI/output/music2prompts/` |
 
 ### Wiring examples
 
@@ -207,7 +261,8 @@ python tests/run_pipeline_check.py
 
 ## Notes & limits
 
-* One LM Studio request per stage plus one per shot batch — expect a few minutes per track on a
+* Existing workflows keep working: the three new outputs were appended, so the old sockets did not move.
+* One LLM request per stage plus one per shot batch — expect a few minutes per track on a
   small local model (≈5 min for 45 s of audio with `gemma-4-e4b` on a 2080 Ti).
 * Whisper large-v3 needs ≈2.9 GB VRAM in fp16 for the weights and up to ~7 GB during word-timestamp
   alignment; `free_comfy_vram` and `free_lmstudio_vram` make room before it loads.

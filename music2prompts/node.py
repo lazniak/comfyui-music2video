@@ -1,28 +1,49 @@
-"""The Music2Prompts node: audio in, generation prompts out. Nothing is rendered."""
+"""The Music2Prompts node: audio in, prompts out - and, optionally, rendered media."""
 
 from __future__ import annotations
 
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from comfy_api.latest import io
 
 from . import asr as asr_module
 from . import music_dsp
+from . import render as render_module
 from .h3_format import H3Shot, Speaker, Subject, render_i2va, render_ref2va
 from .llm_stages import StageRunner, load_h3_guide
 from .lmstudio import DEFAULT_URL, FALLBACK_MODELS, LMStudioClient
+from .providers import (
+    FALLBACK_ANTHROPIC,
+    FALLBACK_OPENAI,
+    FALLBACK_OPENROUTER,
+    LLM_PROVIDERS,
+    llm_model_options,
+    make_llm_client,
+)
+from .render import MEDIA_PROVIDERS, ImageRequest, VideoRequest
 from .shots import ShotSlot, attach_lyrics, plan_shots
-from .util import as_list, audio_to_mono, first_str, image_tensor_to_data_uri, log, slice_audio, warn
+from .util import (
+    PREFIX,
+    as_list,
+    audio_to_mono,
+    first_str,
+    image_tensor_to_data_uri,
+    log,
+    slice_audio,
+    warn,
+)
 
 ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]
 DEVICES = ["auto", "cuda:0", "cuda:1", "cpu"]
+VIDEO_PROMPT_SOURCES = ["i2va", "ref2va"]
 DEFAULT_NEGATIVE = (
     "blurry, low quality, watermark, signature, text artifacts, deformed hands, extra limbs, "
     "oversaturated colors, jpeg artifacts, plastic skin"
 )
-TOTAL_STAGES = 7
+BASE_STAGES = 7
 
 
 def _model_options() -> list[str]:
@@ -31,6 +52,35 @@ def _model_options() -> list[str]:
         if fallback not in keys:
             keys.append(fallback)
     return keys or list(FALLBACK_MODELS)
+
+
+def _schema_options() -> dict[str, list[str]]:
+    """Probe every provider once, in parallel, while the node schema is built.
+
+    Each probe has a short timeout and falls back to a static list, so a missing
+    key or an offline provider costs a moment, never an exception.
+    """
+    tasks = {
+        "lmstudio": _model_options,
+        "openrouter": lambda: llm_model_options("openrouter") or list(FALLBACK_OPENROUTER),
+        "openai": lambda: llm_model_options("openai") or list(FALLBACK_OPENAI),
+        "anthropic": lambda: llm_model_options("anthropic") or list(FALLBACK_ANTHROPIC),
+        "fal_image": render_module.probe_fal_images,
+        "openrouter_image": render_module.probe_openrouter_images,
+        "fal_video": render_module.probe_fal_videos,
+        "openrouter_video": render_module.probe_openrouter_videos,
+    }
+    results: dict[str, list[str]] = {}
+
+    def run(name: str) -> None:
+        try:
+            results[name] = list(tasks[name]())
+        except Exception:
+            results[name] = []
+
+    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+        list(pool.map(run, tasks))
+    return {name: values or ["(none found)"] for name, values in results.items()}
 
 
 def _interrupt_check() -> None:
@@ -47,15 +97,18 @@ class Music2PromptsLM(io.ComfyNode):
 
     @classmethod
     def define_schema(cls) -> io.Schema:
+        options = _schema_options()
         return io.Schema(
             node_id="Music2PromptsLM",
             display_name="🎵 Music → Prompts (LM Studio + Whisper)",
             category="Music2Prompts",
             description=(
-                "Analyses an audio track locally (Whisper large-v3 + librosa), directs it with a local "
-                "LM Studio model and returns ready-to-use prompts: start-frame image prompts, subject "
-                "reference prompts and MiniMax H3 video prompts (I2VA and Ref2VA), plus shot timings. "
-                "It never generates images or video and never calls a cloud API."
+                "Analyses an audio track locally (Whisper large-v3 + librosa), directs it with an LLM "
+                "(LM Studio by default, or OpenRouter / OpenAI / Anthropic) and returns ready-to-use "
+                "prompts: start-frame image prompts, subject reference prompts and MiniMax H3 video "
+                "prompts (I2VA and Ref2VA), plus shot timings and per-shot audio for lipsync. "
+                "Image and video rendering through fal.ai or OpenRouter is optional and off by default - "
+                "those providers bill per call."
             ),
             inputs=[
                 io.Audio.Input("audio", tooltip="Track to convert into prompts."),
@@ -66,9 +119,33 @@ class Music2PromptsLM(io.ComfyNode):
                     tooltip="Your brief: story, mood, world, constraints.",
                 ),
                 io.Combo.Input(
+                    "llm_provider",
+                    options=list(LLM_PROVIDERS),
+                    default="lmstudio",
+                    tooltip=(
+                        "Who writes the prompts. 'lmstudio' is local and free; the other three are "
+                        "paid APIs. Only the model dropdown of the selected provider stays visible."
+                    ),
+                ),
+                io.Combo.Input(
                     "lm_model",
-                    options=_model_options(),
+                    options=options["lmstudio"],
                     tooltip="Model served by LM Studio. The list is read from the running server.",
+                ),
+                io.Combo.Input(
+                    "openrouter_model", options=options["openrouter"],
+                    tooltip="Model used when llm_provider = openrouter.",
+                ),
+                io.Combo.Input(
+                    "openai_model", options=options["openai"],
+                    tooltip="Model used when llm_provider = openai.",
+                ),
+                io.Combo.Input(
+                    "anthropic_model", options=options["anthropic"],
+                    tooltip=(
+                        "Model used when llm_provider = anthropic. Structured stages go through forced "
+                        "tool use; temperature is not sent because current Claude models reject it."
+                    ),
                 ),
                 io.String.Input(
                     "visual_style",
@@ -122,7 +199,52 @@ class Music2PromptsLM(io.ComfyNode):
                 ),
                 io.Int.Input(
                     "seed", default=0, min=0, max=0xFFFFFFFFFFFFFFF, control_after_generate=True,
-                    tooltip="Forwarded to LM Studio for reproducible prompt writing.",
+                    tooltip="Forwarded to the LLM and to the image/video models for reproducible runs.",
+                ),
+                io.Combo.Input(
+                    "image_provider",
+                    options=list(MEDIA_PROVIDERS),
+                    default="none",
+                    tooltip=(
+                        "Render the start frames here. 'none' = prompts only (free). "
+                        "fal.ai and OpenRouter bill per generated image."
+                    ),
+                ),
+                io.Combo.Input(
+                    "fal_image_model",
+                    options=options["fal_image"],
+                    tooltip="Image model used when image_provider = fal.",
+                ),
+                io.Combo.Input(
+                    "openrouter_image_model",
+                    options=options["openrouter_image"],
+                    tooltip="Image model used when image_provider = openrouter.",
+                ),
+                io.Combo.Input(
+                    "video_provider",
+                    options=list(MEDIA_PROVIDERS),
+                    default="none",
+                    tooltip=(
+                        "Render the clips here. 'none' = prompts only (free). "
+                        "fal.ai and OpenRouter bill per generated second of video."
+                    ),
+                ),
+                io.Combo.Input(
+                    "fal_video_model",
+                    options=options["fal_video"],
+                    tooltip=(
+                        "Video model used when video_provider = fal. The MiniMax H3 endpoints match "
+                        "the prompts this node writes; pick a 'reference-to-video' id for Ref2VA."
+                    ),
+                ),
+                io.Combo.Input(
+                    "openrouter_video_model",
+                    options=options["openrouter_video"],
+                    tooltip="Video model used when video_provider = openrouter.",
+                ),
+                io.Int.Input(
+                    "render_concurrency", default=2, min=1, max=16,
+                    tooltip="How many images/clips are rendered at the same time.",
                 ),
                 # ------------------------------------------------------------------ advanced
                 io.String.Input(
@@ -189,6 +311,45 @@ class Music2PromptsLM(io.ComfyNode):
                         "Inject this many characters of the official MiniMax H3 guides (when "
                         "ComfyUI-MiniMaxH3-Easy is installed). Needs a large context; 0 = compact rules only."
                     ),
+                ),
+                io.String.Input(
+                    "openrouter_api_key", default="", advanced=True,
+                    tooltip="Empty = read OPENROUTER_API_KEY from the environment.",
+                ),
+                io.String.Input(
+                    "openai_api_key", default="", advanced=True,
+                    tooltip="Empty = read OPENAI_API_KEY from the environment.",
+                ),
+                io.String.Input(
+                    "anthropic_api_key", default="", advanced=True,
+                    tooltip="Empty = read ANTHROPIC_API_KEY from the environment.",
+                ),
+                io.String.Input(
+                    "fal_api_key", default="", advanced=True,
+                    tooltip="Empty = read FAL_KEY (or FAL_API_KEY) from the environment.",
+                ),
+                io.Combo.Input(
+                    "video_prompt_source", options=list(VIDEO_PROMPT_SOURCES), default="i2va",
+                    advanced=True,
+                    tooltip=(
+                        "Which prompt feeds the video model: 'i2va' uses the rendered start frame as "
+                        "the first frame, 'ref2va' uses the rendered subject sheets as references."
+                    ),
+                ),
+                io.Boolean.Input(
+                    "render_subject_sheets", default=False, advanced=True,
+                    tooltip=(
+                        "Also render one reference image per subject. Required for ref2va video and "
+                        "billed like any other image."
+                    ),
+                ),
+                io.Boolean.Input(
+                    "save_rendered_video", default=True, advanced=True,
+                    tooltip="Write the clips into ComfyUI/output/music2prompts (needed for the VIDEO output).",
+                ),
+                io.Int.Input(
+                    "render_timeout", default=600, min=60, max=3600, advanced=True,
+                    tooltip="Seconds to wait for one image or clip before giving up on it.",
                 ),
                 io.Combo.Input(
                     "whisper_model", options=list(asr_module.SUPPORTED_MODELS),
@@ -306,6 +467,9 @@ class Music2PromptsLM(io.ComfyNode):
                 io.Audio.Output(display_name="audio_clips", is_output_list=True),
                 io.String.Output(display_name="transcript"),
                 io.String.Output(display_name="analysis_json"),
+                io.Image.Output(display_name="images", is_output_list=True),
+                io.Image.Output(display_name="subject_images", is_output_list=True),
+                io.Video.Output(display_name="videos", is_output_list=True),
             ],
         )
 
@@ -328,6 +492,25 @@ class Music2PromptsLM(io.ComfyNode):
         word_influence: float,
         whisper_device: str,
         seed: int,
+        llm_provider: str = "lmstudio",
+        image_provider: str = "none",
+        fal_image_model: str = "",
+        openrouter_image_model: str = "",
+        video_provider: str = "none",
+        fal_video_model: str = "",
+        openrouter_video_model: str = "",
+        render_concurrency: int = 2,
+        openrouter_model: str = "",
+        openai_model: str = "",
+        anthropic_model: str = "",
+        openrouter_api_key: str = "",
+        openai_api_key: str = "",
+        anthropic_api_key: str = "",
+        fal_api_key: str = "",
+        video_prompt_source: str = "i2va",
+        render_subject_sheets: bool = False,
+        save_rendered_video: bool = True,
+        render_timeout: int = 600,
         lm_url: str = DEFAULT_URL,
         lm_api_key: str = "",
         lm_model_override: str = "",
@@ -366,14 +549,38 @@ class Music2PromptsLM(io.ComfyNode):
         reference_images=None,
     ) -> io.NodeOutput:
         started = time.perf_counter()
-        progress = _ProgressReporter(TOTAL_STAGES, verbose)
+        provider = (llm_provider or "lmstudio").strip().lower()
+        wants_images = (image_provider or "none").lower() not in {"", "none"}
+        wants_video = (video_provider or "none").lower() not in {"", "none"}
+        progress = _ProgressReporter(BASE_STAGES + int(wants_images) + int(wants_video), verbose)
 
         samples, sample_rate = audio_to_mono(audio)
         duration = len(samples) / float(sample_rate)
         log(f"track: {duration:.1f}s @ {sample_rate} Hz")
 
-        model_key = (lm_model_override or lm_model or "").strip()
-        client = LMStudioClient(lm_url, lm_api_key, timeout=lm_timeout, retries=lm_retries, verbose=verbose)
+        model_key, api_key = cls._pick_model(
+            provider,
+            lm_model_override or lm_model,
+            {"openrouter": openrouter_model, "openai": openai_model, "anthropic": anthropic_model},
+            {
+                "lmstudio": lm_api_key,
+                "openrouter": openrouter_api_key,
+                "openai": openai_api_key,
+                "anthropic": anthropic_api_key,
+            },
+        )
+        client = make_llm_client(
+            provider,
+            lm_url=lm_url,
+            api_key=api_key,
+            timeout=lm_timeout,
+            retries=lm_retries,
+            verbose=verbose,
+        )
+        local_llm = provider == "lmstudio"
+        image_model = fal_image_model if image_provider == "fal" else openrouter_image_model
+        video_model = fal_video_model if video_provider == "fal" else openrouter_video_model
+        log(f"LLM: {provider}/{model_key}")
 
         # ---------------------------------------------------------- transcription
         progress.step("transcribing")
@@ -381,7 +588,7 @@ class Music2PromptsLM(io.ComfyNode):
         if not whisper_skip:
             if free_comfy_vram:
                 asr_module.free_comfy_vram()
-            if free_lmstudio_vram:
+            if free_lmstudio_vram and local_llm:
                 log(f"unloading '{model_key}' from LM Studio to make room for Whisper")
                 client.unload(model_key)
             speech, _ = audio_to_mono(audio, target_sr=asr_module.WHISPER_SAMPLE_RATE)
@@ -429,14 +636,15 @@ class Music2PromptsLM(io.ComfyNode):
         _interrupt_check()
 
         # ---------------------------------------------------------- LLM
-        progress.step(f"preparing LM Studio model '{model_key}'")
-        client.ensure_model(
-            model_key,
-            auto_download=lm_auto_download,
-            auto_load=lm_auto_load,
-            context_length=lm_context_length,
-            progress=lambda message: log(message),
-        )
+        progress.step(f"preparing model '{model_key}' ({provider})")
+        if local_llm:
+            client.ensure_model(
+                model_key,
+                auto_download=lm_auto_download,
+                auto_load=lm_auto_load,
+                context_length=lm_context_length,
+                progress=lambda message: log(message),
+            )
 
         runner = StageRunner(
             client=client,
@@ -451,8 +659,9 @@ class Music2PromptsLM(io.ComfyNode):
         )
 
         reference_descriptions: list[str] = []
+        reference_uris: list[str] = []
         if reference_images is not None:
-            uris = []
+            uris = reference_uris
             try:
                 count = int(reference_images.shape[0])
             except Exception:
@@ -494,7 +703,7 @@ class Music2PromptsLM(io.ComfyNode):
         image_prompts = runner.image_prompts(slots, content, art, subjects, aspect_ratio, shots_per_request)
         reference_prompts = runner.reference_prompts(subjects, art, aspect_ratio)
 
-        if lm_unload_after:
+        if lm_unload_after and local_llm:
             client.unload(model_key)
 
         # ---------------------------------------------------------- assembly
@@ -549,6 +758,93 @@ class Music2PromptsLM(io.ComfyNode):
             for index, name in enumerate(subject_names)
         ]
 
+        # ---------------------------------------------------------- optional rendering
+        images_out: list = []
+        subject_images_out: list = []
+        videos_out: list = []
+        image_payloads: list[bytes | None] = []
+        subject_payloads: list[bytes | None] = []
+        video_paths: list[str] = []
+
+        if wants_images:
+            progress.step(f"rendering {len(start_frames)} start frame(s) with {image_provider}")
+            image_client = render_module.make_media_client(
+                image_provider, fal_api_key if image_provider == "fal" else openrouter_api_key,
+                timeout=render_timeout, verbose=verbose,
+            )
+            image_payloads = render_module.render_images(
+                image_client,
+                image_model,
+                [
+                    ImageRequest(
+                        prompt=prompt,
+                        negative=negatives[index],
+                        aspect_ratio=aspect_ratio,
+                        seed=(int(seed) + index) if seed else None,
+                        references=list(reference_uris),
+                        label=f"shot {index + 1}",
+                    )
+                    for index, prompt in enumerate(start_frames)
+                ],
+                render_concurrency,
+            )
+            images_out = [render_module.image_bytes_to_tensor(data) for data in image_payloads if data]
+            if render_subject_sheets and subject_prompts:
+                subject_payloads = render_module.render_images(
+                    image_client,
+                    image_model,
+                    [
+                        ImageRequest(
+                            prompt=prompt,
+                            negative=base_negative,
+                            aspect_ratio=aspect_ratio,
+                            seed=(int(seed) + 1000 + index) if seed else None,
+                            references=list(reference_uris),
+                            label=subject_names[index] if index < len(subject_names) else "",
+                        )
+                        for index, prompt in enumerate(subject_prompts)
+                    ],
+                    render_concurrency,
+                )
+                subject_images_out = [
+                    render_module.image_bytes_to_tensor(data) for data in subject_payloads if data
+                ]
+            log(f"{len(images_out)}/{len(start_frames)} start frames rendered")
+            _interrupt_check()
+
+        if wants_video:
+            progress.step(f"rendering {len(slots)} clip(s) with {video_provider}")
+            video_client = render_module.make_media_client(
+                video_provider, fal_api_key if video_provider == "fal" else openrouter_api_key,
+                timeout=render_timeout, verbose=verbose,
+            )
+            use_reference = (video_prompt_source or "i2va").lower() == "ref2va"
+            subject_uris = [
+                render_module.data_uri(data) for data in subject_payloads if data
+            ][:9]
+            video_requests: list[VideoRequest] = []
+            for index, slot in enumerate(slots):
+                frame = image_payloads[index] if index < len(image_payloads) else None
+                video_requests.append(
+                    VideoRequest(
+                        prompt=(ref2va if use_reference else i2va)[index],
+                        seconds=slot.duration,
+                        aspect_ratio=aspect_ratio,
+                        seed=(int(seed) + index) if seed else None,
+                        first_frame="" if use_reference else (render_module.data_uri(frame) if frame else ""),
+                        references=subject_uris if use_reference else [],
+                        label=f"shot {slot.index}",
+                    )
+                )
+            payloads = render_module.render_videos(
+                video_client, video_model, video_requests, render_concurrency
+            )
+            if save_rendered_video:
+                video_paths = render_module.save_videos(payloads, filename_prefix)
+                videos_out = cls._videos_from_paths(video_paths)
+            log(f"{sum(1 for item in payloads if item)}/{len(video_requests)} clips rendered")
+            _interrupt_check()
+
         debug = {
             "duration": round(duration, 3),
             "music": analysis,
@@ -562,7 +858,19 @@ class Music2PromptsLM(io.ComfyNode):
             "subjects": subjects,
             "reference_image_descriptions": reference_descriptions,
             "shots": shots_debug,
+            "rendering": {
+                "image_provider": image_provider if wants_images else "none",
+                "image_model": image_model if wants_images else "",
+                "images_rendered": len(images_out),
+                "subject_images_rendered": len(subject_images_out),
+                "video_provider": video_provider if wants_video else "none",
+                "video_model": video_model if wants_video else "",
+                "video_prompt_source": video_prompt_source,
+                "video_paths": video_paths,
+                "concurrency": render_concurrency,
+            },
             "settings": {
+                "llm_provider": provider,
                 "lm_model": model_key,
                 "clip_seconds": clip_seconds,
                 "min_shot_seconds": min_shot_seconds,
@@ -593,9 +901,47 @@ class Music2PromptsLM(io.ComfyNode):
             audio_clips,
             transcription.get("text", ""),
             analysis_json,
+            images_out,
+            subject_images_out,
+            videos_out,
         )
 
     # ------------------------------------------------------------------ helpers
+
+    @staticmethod
+    def _pick_model(
+        provider: str,
+        local_model: str,
+        cloud_models: dict[str, str],
+        keys: dict[str, str],
+    ) -> tuple[str, str]:
+        """Model key and API key for the selected provider."""
+        if provider == "lmstudio":
+            return (local_model or "").strip(), keys.get("lmstudio", "")
+        model = (cloud_models.get(provider) or "").strip()
+        if not model or model.startswith("("):
+            raise ValueError(
+                f"{PREFIX} pick a model for '{provider}' in the Advanced section "
+                f"({provider}_model). The list was empty when the node was loaded - "
+                "add the API key to the environment and restart ComfyUI to populate it."
+            )
+        return model, keys.get(provider, "")
+
+    @staticmethod
+    def _videos_from_paths(paths: list[str]) -> list:
+        """Wrap saved clips in ComfyUI's VIDEO type so SaveVideo/PreviewVideo accept them."""
+        videos = []
+        try:
+            from comfy_api.input_impl import VideoFromFile  # type: ignore
+        except Exception as exc:  # pragma: no cover - older ComfyUI
+            warn(f"this ComfyUI has no VIDEO input type ({exc}); the clips are on disk only")
+            return videos
+        for path in paths:
+            try:
+                videos.append(VideoFromFile(path))
+            except Exception as exc:
+                warn(f"could not open {path} as VIDEO: {exc}")
+        return videos
 
     @staticmethod
     def _build_shot(
