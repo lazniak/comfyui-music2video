@@ -60,26 +60,31 @@ def run_pipeline(**overrides):
 # --------------------------------------------------------------------------- checks
 
 
+def values(result) -> dict:
+    """The run's outputs by name: the pipe unpacked, plus the media sockets."""
+    from music2prompts import pipe as pipe_module
+
+    pipe, audio_clips, images, subject_images, videos, final_video = result.args
+    named = dict(zip(pipe_module.NAMES, pipe_module.unpack(pipe)))
+    named.update(
+        audio_clips=audio_clips, images=images, subject_images=subject_images,
+        videos=videos, final_video=final_video,
+    )
+    return named
+
+
 def check_lists_are_aligned(result) -> None:
-    (
-        start_frames,
-        reference_prompts,
-        subject_names,
-        i2va,
-        ref2va,
-        negatives,
-        indices,
-        starts,
-        ends,
-        durations,
-        audio_clips,
-        transcript,
-        analysis_json,
-        images,
-        subject_images,
-        videos,
-        final_video,
-    ) = result.args
+    got = values(result)
+    start_frames = got["image_prompts_start"]
+    reference_prompts = got["image_prompts_reference"]
+    subject_names = got["reference_subjects"]
+    i2va, ref2va = got["video_prompts_i2va"], got["video_prompts_ref2va"]
+    negatives, indices = got["negative_prompts"], got["shot_index"]
+    starts, ends, durations = got["start_times"], got["end_times"], got["durations"]
+    audio_clips, transcript = got["audio_clips"], got["transcript"]
+    analysis_json = got["analysis_json"]
+    images, subject_images = got["images"], got["subject_images"]
+    videos, final_video = got["videos"], got["final_video"]
     count = len(indices)
     assert count >= 3, f"expected several shots, got {count}"
     for series in (start_frames, i2va, ref2va, negatives, starts, ends, durations, audio_clips):
@@ -95,7 +100,8 @@ def check_lists_are_aligned(result) -> None:
 
 
 def check_timing(result) -> None:
-    starts, ends, durations = result.args[7], result.args[8], result.args[9]
+    got = values(result)
+    starts, ends, durations = got["start_times"], got["end_times"], got["durations"]
     assert starts[0] == 0.0
     assert abs(ends[-1] - TRACK_SECONDS) < 0.05
     for index in range(1, len(starts)):
@@ -104,7 +110,7 @@ def check_timing(result) -> None:
 
 
 def check_i2va_format(result) -> None:
-    text = result.args[3][0]
+    text = values(result)["video_prompts_i2va"][0]
     assert text.startswith(
         "For the target video, at 0.00 seconds into the target video, "
         "<Picture 1> (from [Shot 1]) is fully referenced."
@@ -115,7 +121,7 @@ def check_i2va_format(result) -> None:
 
 
 def check_ref2va_format(result) -> None:
-    text = result.args[4][0]
+    text = values(result)["video_prompts_ref2va"][0]
     for section in (
         "subject_definitions:",
         "summary:",
@@ -131,18 +137,20 @@ def check_ref2va_format(result) -> None:
 
 
 def check_image_prompts(result) -> None:
-    assert all(prompt.strip() for prompt in result.args[0])
-    assert all(prompt.strip() for prompt in result.args[1])
+    got = values(result)
+    assert all(prompt.strip() for prompt in got["image_prompts_start"])
+    assert all(prompt.strip() for prompt in got["image_prompts_reference"])
 
 
 def check_negatives(result) -> None:
-    negatives = result.args[5]
+    negatives = values(result)["negative_prompts"]
     assert "watermark" in negatives[0]
     assert "daylight" in negatives[0]
 
 
 def check_audio_clips(result) -> None:
-    starts, ends, clips = result.args[7], result.args[8], result.args[10]
+    got = values(result)
+    starts, ends, clips = got["start_times"], got["end_times"], got["audio_clips"]
     sample_rate = clips[0]["sample_rate"]
     assert sample_rate == 22050, f"clips must keep the source rate, got {sample_rate}"
     total = 0
@@ -158,7 +166,7 @@ def check_audio_clips(result) -> None:
 
 
 def check_rendering_is_off_by_default(result) -> None:
-    rendering = json.loads(result.args[12])["rendering"]
+    rendering = json.loads(values(result)["analysis_json"])["rendering"]
     assert rendering["image_provider"] == "none"
     assert rendering["video_provider"] == "none"
     assert rendering["video_paths"] == []
@@ -189,15 +197,16 @@ def main() -> int:
 
     forced = run_pipeline(num_shots=4)
     try:
-        assert len(forced.args[6]) == 4
+        assert len(values(forced)["shot_index"]) == 4
         print("  ok   num_shots_override")
     except AssertionError:
         failures += 1
-        print(f"  FAIL num_shots_override: got {len(forced.args[6])} shots")
+        print(f"  FAIL num_shots_override: got {len(values(forced)['shot_index'])} shots")
 
     long_shots = run_pipeline(min_shot_seconds=10.0, max_shot_seconds=14.0, clip_seconds=12.0)
     try:
-        assert all(10.0 - 0.01 <= value <= 14.0 + 0.01 for value in long_shots.args[9]), long_shots.args[9]
+        spans = values(long_shots)["durations"]
+        assert all(10.0 - 0.01 <= value <= 14.0 + 0.01 for value in spans), spans
         print("  ok   custom_min_max_shot_length")
     except AssertionError as exc:
         failures += 1
@@ -205,9 +214,10 @@ def main() -> int:
 
     padded = run_pipeline(audio_clip_padding=0.25)
     try:
-        rate = padded.args[10][1]["sample_rate"]
-        plain_len = round((padded.args[8][1] - padded.args[7][1]) * rate)
-        grown = padded.args[10][1]["waveform"].shape[-1] - plain_len
+        got = values(padded)
+        rate = got["audio_clips"][1]["sample_rate"]
+        plain_len = round((got["end_times"][1] - got["start_times"][1]) * rate)
+        grown = got["audio_clips"][1]["waveform"].shape[-1] - plain_len
         # independent rounding of each edge can differ by a sample
         assert abs(grown - round(0.5 * rate)) <= 1, f"padding grew the clip by {grown} samples"
         print("  ok   audio_clip_padding")
@@ -216,9 +226,9 @@ def main() -> int:
         print(f"  FAIL audio_clip_padding: {exc}")
 
     print("\n--- sample I2VA prompt ---")
-    print(result.args[3][0])
+    print(values(result)["video_prompts_i2va"][0])
     print("\n--- sample Ref2VA prompt ---")
-    print(result.args[4][0][:900])
+    print(values(result)["video_prompts_ref2va"][0][:900])
     print(f"\n{'ALL CHECKS PASSED' if not failures else str(failures) + ' CHECK(S) FAILED'}")
     return 1 if failures else 0
 

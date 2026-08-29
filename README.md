@@ -1,7 +1,7 @@
 # Music → Prompts (LM Studio + Whisper) — ComfyUI node
 
 Turns an audio track into **ready-to-use generation prompts** — and, if you want, into the images,
-the clips, and the finished cut-together film. One node in, seventeen outputs out.
+the clips, and the finished cut-together film. One node in; the prompts and timings come out on one pipe, the media on their own sockets.
 
 The analysis is always local and free. The prompt writing is local by default and can be moved to a
 cloud LLM. Rendering is **off by default** and only happens when you pick a provider for it.
@@ -27,8 +27,11 @@ Built on the ComfyUI **V3 node schema**, so the 30+ secondary settings collapse 
 2. Skopiuj / zlinkuj ten katalog do `ComfyUI/custom_nodes/` i zrestartuj ComfyUI.
 3. Dodaj node **🎵 Music → Prompts (LM Studio + Whisper)**, podłącz `LoadAudio`, wpisz brief.
 4. Pierwsze uruchomienie ściąga Whisper large-v3 (~3 GB) do `ComfyUI/models/whisper/`.
-5. Wyjścia to **listy** — podłącz `image_prompts_start` do dowolnego enkodera tekstu,
-   a `video_prompts_i2va` / `video_prompts_ref2va` do node'a MiniMax H3.
+5. Wszystkie teksty i liczby wychodzą jednym kablem `pipe`. Dodaj node
+   **🎵 Music2Prompts Pipe Expand**, podłącz do niego `pipe`, i tam masz osobne wyjścia:
+   `image_prompts_start` do enkodera tekstu, `video_prompts_i2va` / `video_prompts_ref2va`
+   do node'a MiniMax H3. Media (`images`, `videos`, `final_video`, `audio_clips`) zostają
+   jako własne gniazda na głównym node'zie.
 
 Instalacja przez junction (Windows, bez kopiowania):
 
@@ -246,29 +249,54 @@ assembled; `rich` hands the endpoint's writer the wheel, and `model default` sen
 
 ## Outputs
 
-Fourteen of the seventeen outputs are **lists** (everything except `transcript` and `analysis_json`). Wire them into any node that iterates a list, or index them.
+The node has six sockets. Every text and number leaves on one of them.
 
-| # | Output | Aligned with | Contents |
+| # | Output | Type | Contents |
 |---|---|---|---|
-| 1 | `image_prompts_start` | shots | Natural-language cinematic prompt for the first frame of each shot (Flux / Qwen-Image / Z-Image style) |
-| 2 | `image_prompts_reference` | subjects | Clean reference-sheet prompt per recurring subject |
-| 3 | `reference_subjects` | subjects | Subject names, same order as #2 |
-| 4 | `video_prompts_i2va` | shots | MiniMax H3 **image-to-video** prompt (first frame = the image from #1) |
-| 5 | `video_prompts_ref2va` | shots | MiniMax H3 **reference-to-video** prompt (six-section format) |
-| 6 | `negative_prompts` | shots | Base negatives + per-shot additions, de-duplicated |
-| 7 | `shot_index` | shots | 1…N |
-| 8 | `start_times` | shots | Seconds |
-| 9 | `end_times` | shots | Seconds |
-| 10 | `durations` | shots | Seconds, inside the `min_shot_seconds`…`max_shot_seconds` window |
-| 11 | `audio_clips` | shots | **AUDIO** cut sample-accurately to each shot — feed straight into lipsync |
-| 12 | `transcript` | — | Full transcription (empty for instrumentals) |
-| 13 | `analysis_json` | — | Everything: BPM, beats, sections, treatment, art direction, subject bible, per-shot fields, and what was rendered |
-| 14 | `images` | shots | **IMAGE** — rendered start frames (empty while `image_provider = none`) |
-| 15 | `subject_images` | subjects | **IMAGE** — rendered reference sheets (`render_subject_sheets`) |
-| 16 | `videos` | shots | **VIDEO** — rendered clips, also written to `ComfyUI/output/music2prompts/` |
-| 17 | `final_video` | — | **VIDEO** — every clip cut together in shot order, with the music |
+| 1 | `pipe` | **M2P_PIPE** | Every prompt, name, timing, the transcript and the analysis JSON — see the table below |
+| 2 | `audio_clips` | **AUDIO**, per shot | Cut sample-accurately to each shot — feed straight into lipsync |
+| 3 | `images` | **IMAGE**, per shot | Rendered start frames (empty while `image_provider = none`) |
+| 4 | `subject_images` | **IMAGE**, per subject | Rendered reference sheets (`render_subject_sheets`) |
+| 5 | `videos` | **VIDEO**, per shot | Rendered clips, also written to `ComfyUI/output/music2prompts/` |
+| 6 | `final_video` | **VIDEO** | Every clip cut together in shot order, with the music |
+
+### The pipe, and taking it apart
+
+Twelve string and number sockets on one node was a wall of noodles, and they almost always
+travel together. They now leave as one `pipe`; **🎵 Music2Prompts Pipe Expand** hands them
+back wherever one is actually needed. That node also passes the pipe straight through, so
+several can sit along one wire — expand next to the sampler for the prompts, again next to
+a text preview for the transcript. It calls nothing and costs nothing.
+
+The media stayed on their own sockets on purpose: an IMAGE or a VIDEO normally goes
+straight into a preview or a save node, so hiding it behind an expander would cost a node
+and buy nothing.
+
+Everything in the pipe except `transcript` and `analysis_json` is a **list**.
+
+| Field | Aligned with | Contents |
+|---|---|---|
+| `image_prompts_start` | shots | Natural-language cinematic prompt for the first frame of each shot (Flux / Qwen-Image / Z-Image style) |
+| `image_prompts_reference` | subjects | Clean reference-sheet prompt per recurring subject |
+| `reference_subjects` | subjects | Subject names, same order as `image_prompts_reference` |
+| `video_prompts_i2va` | shots | MiniMax H3 **image-to-video** prompt (first frame = the image from `image_prompts_start`) |
+| `video_prompts_ref2va` | shots | MiniMax H3 **reference-to-video** prompt (six-section format) |
+| `negative_prompts` | shots | Base negatives + per-shot additions, de-duplicated |
+| `shot_index` | shots | 1…N |
+| `start_times` | shots | Seconds |
+| `end_times` | shots | Seconds |
+| `durations` | shots | Seconds, inside the `min_shot_seconds`…`max_shot_seconds` window |
+| `transcript` | — | Full transcription (empty for instrumentals) |
+| `analysis_json` | — | Everything: BPM, beats, sections, treatment, art direction, subject bible, per-shot fields, what was rendered, and what it cost |
+
+> **Upgrading:** a workflow saved before the pipe existed loses the links to those twelve
+> sockets, and the links to the media sockets move up with them. Re-wire the media
+> outputs, then take the rest off a Pipe Expand node.
 
 ### Wiring examples
+
+All of these start with `pipe` → **Music2Prompts Pipe Expand**; the field names below are
+that node's outputs.
 
 * **Start frames** → `image_prompts_start` into a text encoder, `negative_prompts` into the negative
   encoder. `durations` / `start_times` drive whatever timing you need downstream.

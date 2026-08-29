@@ -14,6 +14,7 @@ from . import audio_io
 from . import cost as cost_module
 from . import model_cache
 from . import music_dsp
+from . import pipe as pipe_module
 from . import preview as preview_module
 from . import render as render_module
 from . import video as video_module
@@ -1125,138 +1126,18 @@ io.Boolean.Input(
                 ),
             ],
             outputs=[
-                io.String.Output(
-                    display_name="image_prompts_start",
-                    is_output_list=True,
+                io.Custom(pipe_module.PIPE_TYPE).Output(
+                    display_name="pipe",
                     tooltip=(
-                        "One start-frame image prompt per shot, in shot order, written by the "
-                        "LLM's image-prompt stage; a shot the model skipped falls back to a "
-                        "string assembled locally from that shot's opening, action and the art "
-                        "direction, so this list is never short. Always produced, whatever "
-                        "'image_provider' is set to. Wire it into a CLIPTextEncode node (whose "
-                        "CONDITIONING feeds a sampler) or into a text preview node - it is the "
-                        "exact text the built-in renderer sends when 'image_provider' is not "
-                        "'none'."
-                    ),
-                ),
-                io.String.Output(
-                    display_name="image_prompts_reference",
-                    is_output_list=True,
-                    tooltip=(
-                        "One reference-sheet image prompt per subject (not per shot), "
-                        "index-aligned with 'reference_subjects': neutral background, even "
-                        "lighting, whole subject visible, no narrative action. Empty only when "
-                        "no subjects were defined (the subjects stage returned none, or "
-                        "'max_subjects' is 0). If the reference-prompt stage itself fails, "
-                        "every entry is filled from a locally assembled fallback instead, so "
-                        "the list still matches 'reference_subjects' in length. These are "
-                        "exactly the prompts 'render_subject_sheets' renders into "
-                        "'subject_images'."
-                    ),
-                ),
-                io.String.Output(
-                    display_name="reference_subjects",
-                    is_output_list=True,
-                    tooltip=(
-                        "The subject names only - not prompts - one per subject, in the same "
-                        "order and length as 'image_prompts_reference'. A subject can be a "
-                        "character, location, prop, vehicle or style; the name is what binds a "
-                        "subject to its <Picture N> reference in the ref2va prompts. Empty "
-                        "when no subjects were defined (the subjects stage returned none, or "
-                        "'max_subjects' is 0)."
-                    ),
-                ),
-                io.String.Output(
-                    display_name="video_prompts_i2va",
-                    is_output_list=True,
-                    tooltip=(
-                        "One MiniMax H3 image-to-video (I2VA) prompt per shot: a header "
-                        "declaring <Picture 1> fully referenced at 0.00 s, then "
-                        "integrated_multimodal_description, overall_soundscape and "
-                        "non_diegetic_music. It assumes the matching entry of 'images' is "
-                        "supplied as the clip's first frame - the <Picture 1> reference is "
-                        "written even on a prompts-only run where no image exists. Always "
-                        "produced; feed it to an image-to-video endpoint together with that "
-                        "start frame."
-                    ),
-                ),
-                io.String.Output(
-                    display_name="video_prompts_ref2va",
-                    is_output_list=True,
-                    tooltip=(
-                        "One MiniMax H3 reference-to-video (Ref2VA) prompt per shot, in the "
-                        "full block form: subject_definitions, summary, retention_analysis, "
-                        "detailed_description, overall_soundscape, non_diegetic_music. Unlike "
-                        "'video_prompts_i2va' it carries no first frame. Identity comes from "
-                        "reference images cited as <Picture N>, and those citations appear "
-                        "only once the run has rendered subject sheets: with 'video_provider' "
-                        "set and 'video_prompt_source' = ref2va, the strings are re-rendered "
-                        "with the sheet numbers bound in. The same re-render also adds an "
-                        "<Audio 1> definition and retention line when the shot's audio is "
-                        "being sent. Without either, undefined labels are stripped and the "
-                        "subjects are described in words only. Suits "
-                        "minimax/h3/reference-to-video."
-                    ),
-                ),
-                io.String.Output(
-                    display_name="negative_prompts",
-                    is_output_list=True,
-                    tooltip=(
-                        "One negative prompt per shot: 'negative_prompt_base', the run-wide "
-                        "negative the art-direction stage added, and the shot's own, merged "
-                        "with duplicates dropped. It reaches only the built-in start-frame "
-                        "renders on fal: the fal payload builder adds negative_prompt when the "
-                        "endpoint's schema declares it (or when that schema could not be read "
-                        "at all), and it is the first field dropped if the endpoint then "
-                        "refuses the request. OpenRouter's image API is never sent a negative, "
-                        "no video request carries one, and the subject sheets are rendered "
-                        "with the raw 'negative_prompt_base' text only, not with these merged "
-                        "strings. Encode it with CLIPTextEncode and wire the result into a "
-                        "sampler's negative conditioning when you render images yourself."
-                    ),
-                ),
-                io.Int.Output(
-                    display_name="shot_index",
-                    is_output_list=True,
-                    tooltip=(
-                        "The shot numbers, 1-based and consecutive (1..N), one per shot. The "
-                        "prompts, times, audio clips and images are all in this order and the "
-                        "same length, so use it as the index or label when you fan the lists "
-                        "out into batch nodes. 'videos' is the exception - failed clips are "
-                        "skipped, so it can be shorter."
-                    ),
-                ),
-                io.Float.Output(
-                    display_name="start_times",
-                    is_output_list=True,
-                    tooltip=(
-                        "Each shot's start in seconds from the beginning of the input track, "
-                        "rounded to 3 decimals, one per shot. The shots are consecutive with "
-                        "no gaps or overlaps, so the first value is 0.0 and each value equals "
-                        "the previous shot's entry in 'end_times'."
-                    ),
-                ),
-                io.Float.Output(
-                    display_name="end_times",
-                    is_output_list=True,
-                    tooltip=(
-                        "Each shot's end in seconds from the beginning of the input track, "
-                        "rounded to 3 decimals, one per shot. The last value is the full track "
-                        "duration; every other value is the next shot's start."
-                    ),
-                ),
-                io.Float.Output(
-                    display_name="durations",
-                    is_output_list=True,
-                    tooltip=(
-                        "Shot length in seconds (end minus start, rounded to 3 decimals), one "
-                        "per shot; the planner keeps these inside the "
-                        "'min_shot_seconds'-'max_shot_seconds' window wherever the track "
-                        "length allows. The video endpoint is asked for this length rounded to "
-                        "whole seconds - on fal then clamped into whatever range that endpoint "
-                        "declares and snapped to the nearest value of its duration list - and "
-                        "the returned clip is trimmed, or its last frame held, back to the "
-                        "exact figure here during concatenation."
+                        "Everything this run wrote in words and numbers, on one wire: the "
+                        "start-frame and reference image prompts, the subject names, both "
+                        "MiniMax H3 prompt forms, the negatives, and every shot's index, "
+                        "start, end and duration, plus the transcript and the full analysis "
+                        "JSON. Feed it to 'Music2Prompts Pipe Expand' wherever you need one "
+                        "of them as its own socket; that node passes the pipe through, so it "
+                        "can be tapped as many times as you like along a chain. Only the "
+                        "media stays on its own sockets here, because an IMAGE or a VIDEO "
+                        "goes straight into a preview or a save node."
                     ),
                 ),
                 io.Audio.Output(
@@ -1274,33 +1155,6 @@ io.Boolean.Input(
                         "reference field, 2-30 s otherwise). The clip is re-encoded to MP3 and "
                         "sent inline in the request as a data: URI; clips outside the window "
                         "go out without audio and a warning is logged."
-                    ),
-                ),
-                io.String.Output(
-                    display_name="transcript",
-                    tooltip=(
-                        "A single string: the raw Whisper text of the whole track, with no "
-                        "timings. Empty when 'whisper_skip' is on, when transcription failed, "
-                        "or when the track has no vocal. A .txt is written to "
-                        "ComfyUI/output/music2prompts when 'save_transcript' is on: the whole "
-                        "transcript, then one block per shot with that shot's timings, "
-                        "section, start-frame image prompt and the first line of its i2va "
-                        "video prompt truncated to 200 characters (the i2va prompt is logged "
-                        "even when the clips were rendered from ref2va), and the words sung "
-                        "inside that shot."
-                    ),
-                ),
-                io.String.Output(
-                    display_name="analysis_json",
-                    tooltip=(
-                        "A single JSON string holding the whole run: track duration, the "
-                        "librosa analysis, the full transcript with its language and word "
-                        "count, the LLM's interpretation, art direction and subject bible, the "
-                        "descriptions of any wired-in reference images, per-shot timings, "
-                        "section, lyrics and raw LLM fields, the rendering report (providers, "
-                        "models, clip paths) and the main settings. Always produced. The same "
-                        "text is written to ..._analysis.json in ComfyUI/output/music2prompts "
-                        "when 'save_json' is on."
                     ),
                 ),
                 io.Image.Output(
@@ -1972,19 +1826,21 @@ io.Boolean.Input(
         replay = feed.ui()
         replay.update(ledger.ui())
         return io.NodeOutput(
-            start_frames,
-            subject_prompts,
-            subject_names,
-            i2va,
-            ref2va,
-            negatives,
-            indices,
-            starts,
-            ends,
-            durations,
+            pipe_module.pack(
+                image_prompts_start=start_frames,
+                image_prompts_reference=subject_prompts,
+                reference_subjects=subject_names,
+                video_prompts_i2va=i2va,
+                video_prompts_ref2va=ref2va,
+                negative_prompts=negatives,
+                shot_index=indices,
+                start_times=starts,
+                end_times=ends,
+                durations=durations,
+                transcript=transcription.get("text", ""),
+                analysis_json=analysis_json,
+            ),
             audio_clips,
-            transcription.get("text", ""),
-            analysis_json,
             images_out,
             subject_images_out,
             videos_out,

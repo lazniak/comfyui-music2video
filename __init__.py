@@ -51,10 +51,11 @@ async def comfy_entrypoint():
             "Update ComfyUI to a recent version and restart."
         ) from exc
 
+    from .music2prompts.expand import Music2PromptsPipeExpand
     from .music2prompts.node import Music2PromptsLM
 
     class Music2PromptsExtension(ComfyExtension):
         async def get_node_list(self) -> list[type[io.ComfyNode]]:
-            return [Music2PromptsLM]
+            return [Music2PromptsLM, Music2PromptsPipeExpand]
 
     return Music2PromptsExtension()

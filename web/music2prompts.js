@@ -15,12 +15,16 @@
  *    or a key exported after ComfyUI started shows up without a restart. The values of
  *    hidden widgets are still serialized and still sent to the backend, so nothing here
  *    changes what python receives.
+ *
+ * 3. Give the pipe wire a colour of its own, so the one line carrying every prompt and
+ *    timing is not another grey noodle among the media links.
  */
 
 import { app } from "../../scripts/app.js";
 
 const NODE_ID = "Music2PromptsLM";
 const ROUTE = "/music2prompts/models";
+const PIPE_TYPE = "M2P_PIPE";
 
 // widget -> the provider value that keeps it on screen
 const RULES = [
@@ -163,6 +167,23 @@ function watch(node, name) {
 
 app.registerExtension({
   name: "music2prompts.providerWidgets",
+
+  /** Colour the pipe link, and only that one.
+   *
+   * `LGraphCanvas.link_type_colors` is the frontend's own map from socket type to wire
+   * colour; writing one key into it leaves every other link alone. Guarded because it is
+   * not part of any published contract - a missing map costs the colour, never the node.
+   */
+  setup() {
+    try {
+      const canvas = app.canvas?.constructor;
+      const colours = canvas?.link_type_colors ?? window.LGraphCanvas?.link_type_colors;
+      if (colours && !colours[PIPE_TYPE]) colours[PIPE_TYPE] = "#d4a05a";
+    } catch (error) {
+      console.warn("[Music2Prompts] could not colour the pipe link:", error);
+    }
+  },
+
   async nodeCreated(node) {
     if (node.comfyClass !== NODE_ID) return;
     try {
