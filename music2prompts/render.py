@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from . import cost as cost_module
 from .providers import OPENROUTER_URL, ProviderError, resolve_key
 from .util import PREFIX, clamp_seed, log, warn
 
@@ -384,11 +385,20 @@ class FalClient:
 
     name = "fal"
 
-    def __init__(self, api_key: str = "", timeout: int = 600, poll_seconds: float = 2.0, verbose: bool = False) -> None:
+    def __init__(
+        self,
+        api_key: str = "",
+        timeout: int = 600,
+        poll_seconds: float = 2.0,
+        verbose: bool = False,
+        ledger=None,
+    ) -> None:
         self.api_key = resolve_key("fal", api_key)
         self.timeout = max(30, int(timeout))
         self.poll_seconds = max(0.5, float(poll_seconds))
         self.verbose = bool(verbose)
+        #: Where each render's billed units are recorded. None = nobody is counting.
+        self.ledger = ledger
         if not self.api_key:
             raise RenderError(f"{PREFIX} no fal.ai key. Paste one into the node or set FAL_KEY in the environment.")
 
@@ -401,6 +411,8 @@ class FalClient:
         payload: dict,
         optional_keys: tuple[str, ...] = (),
         spare: dict[str, Any] | None = None,
+        label: str = "",
+        kind: str = "image",
     ) -> dict:
         """Submit, poll and return the model output.
 
@@ -411,9 +423,9 @@ class FalClient:
         attempt = dict(payload)
         droppable = [key for key in optional_keys if key in attempt]
         repaired: set[str] = set()
-        for _ in range(len(droppable) + 4):
+        for round_number in range(len(droppable) + 4):
             try:
-                return self._attempt(model, attempt)
+                return self._attempt(model, attempt, label=label, kind=kind, attempt_number=round_number + 1)
             except _FalRejected as rejected:
                 filled = _repair_payload(attempt, rejected.missing, spare or {}, repaired)
                 if filled:
@@ -430,7 +442,9 @@ class FalClient:
                 ) from rejected
         raise RenderError(f"{PREFIX} fal kept refusing the request for {model}.")
 
-    def _attempt(self, model: str, payload: dict) -> dict:
+    def _attempt(
+        self, model: str, payload: dict, label: str = "", kind: str = "image", attempt_number: int = 1
+    ) -> dict:
         """One submit-poll-collect round trip. Raises ``_FalRejected`` on 400/422."""
         import requests
 
@@ -441,6 +455,9 @@ class FalClient:
             timeout=120,
         )
         if response.status_code in (400, 422):
+            # refused by the gateway before a runner existed, so nothing ran and nothing
+            # was billed - recorded anyway so a run that burned four attempts says so
+            self._record(model, kind, None, label, attempt_number, outcome="rejected")
             raise _FalRejected("submit", response.status_code, response.text)
         if response.status_code >= 400:
             raise RenderError(f"{PREFIX} fal HTTP {response.status_code} for {model}: {response.text[:300]}")
@@ -460,27 +477,57 @@ class FalClient:
             if state == "COMPLETED":
                 result = requests.get(response_url, headers=self._headers(), timeout=120)
                 if result.status_code in (400, 422):
+                    # the job ran before it was refused, so a runner spent GPU time on it
+                    self._record(
+                        model, kind, None, label, attempt_number, outcome="rejected", possibly_billed=True
+                    )
                     raise _FalRejected("result", result.status_code, result.text)
                 if result.status_code >= 400:
                     raise RenderError(f"{PREFIX} fal result HTTP {result.status_code}: {result.text[:200]}")
+                # the billed quantity rides on this response and on no other: the status poll
+                # carries no x-fal-* header, and its metrics.inference_time is runner wall clock
+                self._record(
+                    model, kind, result.headers.get("x-fal-billable-units"), label, attempt_number
+                )
                 return result.json()
             if state in {"FAILED", "ERROR", "CANCELLED"}:
+                self._record(model, kind, None, label, attempt_number, outcome="failed")
                 raise RenderError(f"{PREFIX} fal reported {state} for {model}: {status.text[:300]}")
             time.sleep(self.poll_seconds)
         raise RenderError(f"{PREFIX} fal did not finish {model} within {self.timeout}s.")
+
+    def _record(
+        self,
+        model: str,
+        kind: str,
+        units,
+        label: str,
+        attempt: int,
+        outcome: str = "ok",
+        possibly_billed: bool = False,
+    ) -> None:
+        """Best-effort: an accounting failure must never cost a render that was paid for."""
+        if self.ledger is None:
+            return
+        try:
+            self.ledger.record_fal(
+                model, kind, units, label, attempt, outcome=outcome, possibly_billed=possibly_billed
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            warn(f"could not record the cost of a fal render: {exc}")
 
     # ---------------------------------------------------------------- media
 
     def image(self, model: str, request: ImageRequest) -> bytes:
         payload, optional = build_fal_image_payload(model, request, fal_schema(model))
         spare = {"references": list(request.references)}
-        result = self.run(model, payload, optional_keys=optional, spare=spare)
+        result = self.run(model, payload, optional_keys=optional, spare=spare, label=request.label, kind="image")
         return _first_media(result, ("images", "image"), self._headers())
 
     def video(self, model: str, request: VideoRequest) -> bytes:
         payload, optional = build_fal_video_payload(model, request, fal_schema(model))
         spare = {"first_frame": request.first_frame, "references": list(request.references)}
-        result = self.run(model, payload, optional_keys=optional, spare=spare)
+        result = self.run(model, payload, optional_keys=optional, spare=spare, label=request.label, kind="video")
         return _first_media(result, ("video", "videos"), self._headers())
 
 
@@ -678,11 +725,20 @@ def _first_media(result: Any, keys: tuple[str, ...], headers: dict[str, str]) ->
 class OpenRouterMediaClient:
     name = "openrouter"
 
-    def __init__(self, api_key: str = "", timeout: int = 600, poll_seconds: float = 3.0, verbose: bool = False) -> None:
+    def __init__(
+        self,
+        api_key: str = "",
+        timeout: int = 600,
+        poll_seconds: float = 3.0,
+        verbose: bool = False,
+        ledger=None,
+    ) -> None:
         self.api_key = resolve_key("openrouter", api_key)
         self.timeout = max(30, int(timeout))
         self.poll_seconds = max(1.0, float(poll_seconds))
         self.verbose = bool(verbose)
+        #: OpenRouter states the charge on the reply itself, so nothing has to be priced.
+        self.ledger = ledger
         if not self.api_key:
             raise RenderError(
                 f"{PREFIX} no OpenRouter key. Paste one into the node or set OPENROUTER_API_KEY in the environment."
@@ -694,6 +750,17 @@ class OpenRouterMediaClient:
             "Content-Type": "application/json",
             "X-Title": "ComfyUI Music2Prompts",
         }
+
+    def _record(self, model: str, kind: str, body: dict, label: str, outcome: str = "ok") -> None:
+        """Best-effort: an accounting failure must never cost a render that was paid for."""
+        if self.ledger is None:
+            return
+        try:
+            self.ledger.record_openrouter_media(
+                model, kind, (body or {}).get("usage") or {}, label, outcome=outcome
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            warn(f"could not record the cost of an OpenRouter render: {exc}")
 
     @staticmethod
     def _references(uris: list[str]) -> list[dict]:
@@ -718,7 +785,11 @@ class OpenRouterMediaClient:
         )
         if response.status_code >= 400:
             raise RenderError(f"{PREFIX} OpenRouter image HTTP {response.status_code}: {response.text[:300]}")
-        data = (response.json() or {}).get("data") or []
+        body = response.json() or {}
+        # the image reply carries no id of any kind, so this is the only chance to see the
+        # charge - it can never be looked up afterwards
+        self._record(model, "image", body, request.label)
+        data = body.get("data") or []
         if not data:
             raise RenderError(f"{PREFIX} OpenRouter returned no image: {response.text[:200]}")
         first = data[0]
@@ -767,11 +838,14 @@ class OpenRouterMediaClient:
             body = status.json() or {}
             state = str(body.get("status", "")).lower()
             if state == "completed":
+                # the usage block only exists once the job is done; the 202 submit has none
+                self._record(model, "video", body, request.label)
                 urls = body.get("unsigned_urls") or body.get("urls") or []
                 if not urls:
                     raise RenderError(f"{PREFIX} OpenRouter finished without a video url: {str(body)[:200]}")
                 return _download(urls[0], self._headers())
             if state in {"failed", "cancelled", "canceled", "error"}:
+                self._record(model, "video", body, request.label, outcome="failed")
                 raise RenderError(f"{PREFIX} OpenRouter video {state}: {str(body)[:300]}")
             time.sleep(self.poll_seconds)
         raise RenderError(f"{PREFIX} OpenRouter did not finish the video within {self.timeout}s.")
@@ -780,14 +854,18 @@ class OpenRouterMediaClient:
 # --------------------------------------------------------------------------- front door
 
 
-def make_media_client(provider: str, api_key: str = "", timeout: int = 600, verbose: bool = False):
+def make_media_client(
+    provider: str, api_key: str = "", timeout: int = 600, verbose: bool = False, ledger=None
+):
     provider = (provider or "none").strip().lower()
     if provider in {"", "none", "off"}:
         return None
     if provider == "fal":
-        return FalClient(api_key, timeout=timeout, verbose=verbose)
+        # fetched once here, on the calling thread, so no render worker ever waits on it
+        cost_module.fal_prices()
+        return FalClient(api_key, timeout=timeout, verbose=verbose, ledger=ledger)
     if provider == "openrouter":
-        return OpenRouterMediaClient(api_key, timeout=timeout, verbose=verbose)
+        return OpenRouterMediaClient(api_key, timeout=timeout, verbose=verbose, ledger=ledger)
     raise RenderError(f"{PREFIX} unknown media provider '{provider}'. Pick one of {MEDIA_PROVIDERS}.")
 
 

@@ -155,3 +155,10 @@ def test_the_output_folder_is_always_written_fresh(tmp_path, monkeypatch):
     existing.write_bytes(b"clip")
     paths = render_module.save_videos([b"clip"], "take", temporary=False, reuse={0: str(existing)})
     assert paths[0] != str(existing)
+
+
+def test_the_send_helper_can_carry_a_second_event_type_without_disturbing_previews(sent):
+    """The cost panel rides the same websocket on its own event name."""
+    assert preview_module._send({"node": "1"}) is True
+    assert preview_module._send({"node": "1"}, "music2prompts/cost") is True
+    assert [event for event, _ in sent] == [EVENT, "music2prompts/cost"]

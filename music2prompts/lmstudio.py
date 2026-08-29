@@ -46,14 +46,30 @@ class LMStudioClient:
         timeout: int = 300,
         retries: int = 2,
         verbose: bool = False,
+        ledger=None,
     ) -> None:
         self.base_url = (base_url or DEFAULT_URL).rstrip("/")
         self.api_key = (api_key or "").strip()
         self.timeout = max(10, int(timeout))
         self.retries = max(0, int(retries))
         self.verbose = bool(verbose)
+        #: LM Studio runs on your own machine, so every reply is recorded at exactly zero -
+        #: an empty cost panel on the default provider would read as a broken feature.
+        self.ledger = ledger
 
     # ------------------------------------------------------------------ plumbing
+
+    def _record(self, payload: dict, response: Any, stage: str, attempt: int) -> None:
+        """Best-effort: no accounting problem is worth losing a reply over."""
+        if self.ledger is None:
+            return
+        try:
+            usage = response.get("usage") if isinstance(response, dict) else None
+            self.ledger.record_llm(
+                "lmstudio", str(payload.get("model") or ""), usage or {}, stage, attempt
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            warn(f"could not record a local LLM call: {exc}")
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -369,6 +385,7 @@ class LMStudioClient:
                     base_payload.pop("reasoning_effort", None)
                     payload.pop("reasoning_effort", None)
                     response = self._request("POST", "/v1/chat/completions", payload)
+                self._record(payload, response, stage, attempt + 1)
                 text = self._first_message(response)
                 if self.verbose:
                     log(f"{stage}: {len(text)} chars returned")

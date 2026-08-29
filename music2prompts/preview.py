@@ -26,7 +26,7 @@ SUBFOLDER = "music2prompts"
 EXTENSIONS = {"image": "png", "video": "mp4"}
 
 
-def _send(payload: dict) -> bool:
+def _send(payload: dict, event: str = EVENT) -> bool:
     """Push one event to the browser. ``send_sync`` is safe from a worker thread."""
     try:
         import server  # type: ignore
@@ -37,10 +37,10 @@ def _send(payload: dict) -> bool:
     if instance is None:
         return False
     try:
-        instance.send_sync(EVENT, payload)
+        instance.send_sync(event, payload)
         return True
     except Exception as exc:  # pragma: no cover - defensive
-        warn(f"could not send a preview event: {exc}")
+        warn(f"could not send a {event} event: {exc}")
         return False
 
 

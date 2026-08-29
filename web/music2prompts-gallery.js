@@ -46,6 +46,11 @@
  * * it stays hidden until the first result arrives, so a node that renders nothing looks
  *   exactly as it did before.
  *
+ * Under the gallery sits a second widget with what the run cost. It is its own DOM
+ * widget rather than a section of this one because the gallery hides itself whenever no
+ * preview has arrived - which is exactly a prompts-only run, and exactly the start of
+ * every run, both moments when a running total is worth seeing.
+ *
  * After the run the same items come back in the node's `ui` payload, so reopening the
  * finished job from the queue sidebar refills the gallery. A plain F5 does not: node
  * previews live only in the frontend's memory, and the files are in the temp folder,
@@ -57,7 +62,9 @@ import { api } from "../../scripts/api.js";
 
 const NODE_ID = "Music2PromptsLM";
 const EVENT = "music2prompts/preview";
+const COST_EVENT = "music2prompts/cost";
 const WIDGET = "m2p_gallery";
+const COST_WIDGET = "m2p_cost";
 
 /** Every live gallery, so an event can find the node it belongs to.
  *
@@ -66,6 +73,7 @@ const WIDGET = "m2p_gallery";
  * file every node under the same key. The node is looked up in the graph instead.
  */
 const galleries = new Set();
+const panels = new Set();
 
 const CSS = `
 .m2p-gallery { display: flex; flex-direction: column; gap: 4px; width: 100%; height: 100%;
@@ -95,6 +103,24 @@ const CSS = `
 .m2p-dot { width: 6px; height: 6px; border-radius: 50%; background: #6cd06c;
   display: inline-block; margin-right: 4px; animation: m2p-pulse 1.2s ease-in-out infinite; }
 @keyframes m2p-pulse { 50% { opacity: 0.25; } }
+
+.m2p-cost { display: flex; flex-direction: column; width: 100%; height: 100%; gap: 2px;
+  font-family: inherit; font-size: 11px; color: var(--descrip-text, #b0b0b0);
+  background: var(--comfy-input-bg, #202020); border-radius: 6px; padding: 4px 6px;
+  box-sizing: border-box; }
+.m2p-cost-head { display: flex; align-items: baseline; gap: 6px; }
+.m2p-cost-title { flex: 0 0 auto; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.7; }
+.m2p-cost-total { flex: 1 1 auto; text-align: right; font-size: 13px; color: #eee;
+  font-variant-numeric: tabular-nums; }
+.m2p-cost-rows { display: flex; flex-direction: column; gap: 1px; overflow-y: auto;
+  max-height: 64px; scrollbar-width: thin; }
+.m2p-cost-row { display: flex; align-items: baseline; gap: 6px; }
+.m2p-cost-row[data-prov="estimated"], .m2p-cost-row[data-prov="unknown"] { opacity: 0.75; }
+.m2p-cost-model { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.m2p-cost-qty { flex: 0 0 auto; opacity: 0.6; font-variant-numeric: tabular-nums; }
+.m2p-cost-usd { flex: 0 0 auto; min-width: 62px; text-align: right;
+  font-variant-numeric: tabular-nums; }
+.m2p-cost-note { opacity: 0.55; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
 
 function styleOnce() {
@@ -338,6 +364,172 @@ class Gallery {
   }
 }
 
+/** How well a figure is known, in one character in front of it.
+ *
+ * The distinction is the whole point of the panel: `billed` is what the provider said it
+ * charged, `computed` is its live unit price times units it reported, `estimated` is a
+ * price table that ships in the node. Presenting those as the same number would be the
+ * one failure worth avoiding here.
+ */
+const MARK = { billed: "", computed: "~", estimated: "\u2248", unknown: "", free: "" };
+
+const WORDS = {
+  billed: "charged by the provider",
+  computed: "live unit price x units billed",
+  estimated: "built-in price table x tokens used",
+  unknown: "no price available",
+  free: "runs on your own machine",
+};
+
+class CostPanel {
+  constructor(node) {
+    this.node = node;
+    this.rows = [];
+    this.build();
+  }
+
+  build() {
+    styleOnce();
+    const root = document.createElement("div");
+    root.className = "m2p-cost";
+    root.innerHTML = `
+      <div class="m2p-cost-head">
+        <span class="m2p-cost-title">cost</span>
+        <span class="m2p-cost-total"></span>
+      </div>
+      <div class="m2p-cost-rows"></div>
+      <div class="m2p-cost-note"></div>`;
+    this.root = root;
+    this.total = root.querySelector(".m2p-cost-total");
+    this.list = root.querySelector(".m2p-cost-rows");
+    this.note = root.querySelector(".m2p-cost-note");
+
+    // scroll the rows rather than zooming the graph out from under them
+    this.list.addEventListener("wheel", (event) => {
+      if (this.list.scrollHeight <= this.list.clientHeight) return;
+      event.stopPropagation();
+      event.preventDefault();
+      this.list.scrollTop += event.deltaY;
+    });
+
+    this.widget = this.node.addDOMWidget(COST_WIDGET, "music2prompts_cost", root, {
+      hideOnZoom: false,
+      getMinHeight: () => (this.widget?.hidden ? 0 : 30 + 15 * Math.min(this.rows.length, 4) + 16),
+      serialize: false,
+    });
+    this.widget.serialize = false;
+    this.widget.serializeValue = () => undefined;
+    if (!this.widget.options) this.widget.options = {};
+    this.setVisible(false);
+  }
+
+  setVisible(visible) {
+    if (!this.widget) return;
+    this.widget.hidden = !visible;
+    this.widget.options.hidden = !visible;
+    this.root.style.display = visible ? "" : "none";
+    const descriptor = Object.getOwnPropertyDescriptor(this.node, "widgets");
+    if (descriptor && typeof descriptor.set === "function") {
+      this.node.widgets = [...(this.node.widgets || [])];
+    }
+    this.node.setDirtyCanvas?.(true, true);
+  }
+
+  reset() {
+    this.rows = [];
+    this.list.replaceChildren();
+    this.total.textContent = "";
+    this.note.textContent = "";
+    this.setVisible(false);
+  }
+
+  /** Replace the whole table. The backend always sends the running total, never a delta,
+   * so accumulating here would double every row when the `ui` payload replays it. */
+  fill(payload) {
+    if (!payload) return;
+    const data = Array.isArray(payload) ? payload[0] : payload;
+    if (!data) return;
+    this.rows = data.models || [];
+    this.draw(data);
+    // a run that only ever spent nothing is worth showing at the end, not mid-flight
+    const spent = this.rows.some((row) => row.provenance !== "free");
+    if (spent || data.final) this.setVisible(true);
+  }
+
+  draw(data) {
+    const total = data.total || {};
+    const pending = !data.final;
+    this.total.textContent =
+      `${MARK[total.provenance] || ""}${total.display || "$0.00"}` +
+      (pending ? " ..." : "");
+    this.total.className = `m2p-cost-total${pending ? " m2p-live" : ""}`;
+    this.total.title = WORDS[total.provenance] || "";
+
+    this.list.replaceChildren(
+      ...this.rows.map((row) => {
+        const line = document.createElement("div");
+        line.className = "m2p-cost-row";
+        line.dataset.prov = row.provenance || "unknown";
+
+        const model = document.createElement("span");
+        model.className = "m2p-cost-model";
+        // written as text, never as HTML: every string here comes off the wire
+        model.textContent = row.model || row.provider;
+
+        const quantity = document.createElement("span");
+        quantity.className = "m2p-cost-qty";
+        quantity.textContent =
+          row.units && row.unit_usd
+            ? `${row.units} ${row.unit} x $${row.unit_usd}`
+            : row.tokens
+              ? `${row.tokens.input}+${row.tokens.output} tok`
+              : `${row.calls} call${row.calls === 1 ? "" : "s"}`;
+
+        const money = document.createElement("span");
+        money.className = "m2p-cost-usd";
+        money.textContent = `${MARK[row.provenance] || ""}${row.display}`;
+
+        line.title =
+          `${row.provider} - ${row.calls} call${row.calls === 1 ? "" : "s"} - ` +
+          `${WORDS[row.provenance] || row.provenance}` +
+          (row.note ? ` - ${row.note}` : "");
+        line.append(model, quantity, money);
+        return line;
+      })
+    );
+
+    const notes = [];
+    if (total.unpriced_calls) notes.push(`${total.unpriced_calls} unpriced`);
+    if (total.possibly_billed_calls) {
+      notes.push(`${total.possibly_billed_calls} refused after running`);
+    }
+    if (Number(total.failed_usd || 0) > 0) notes.push(`${total.failed_display} on failed calls`);
+    notes.push(total.note || "");
+    this.note.textContent = notes.filter(Boolean).join(" \u00b7 ");
+    this.note.title = this.note.textContent;
+  }
+}
+
+function costOf(node) {
+  if (!node._m2pCost || node._m2pCost.node !== node) {
+    node._m2pCost = new CostPanel(node);
+    panels.add(node._m2pCost);
+  }
+  return node._m2pCost;
+}
+
+function costFor(id) {
+  const graph = app.graph;
+  const node = graph?.getNodeById?.(Number(id)) ?? graph?.getNodeById?.(id);
+  if (node?._m2pCost) return node._m2pCost;
+  const local = String(id).split(":").pop();
+  for (const panel of panels) {
+    const own = String(panel.node?.id);
+    if (own === String(id) || own === local) return panel;
+  }
+  return null;
+}
+
 function galleryOf(node) {
   if (!node._m2pGallery || node._m2pGallery.node !== node) {
     node._m2pGallery = new Gallery(node);
@@ -375,12 +567,20 @@ app.registerExtension({
       if (detail.reset) gallery.reset(detail.total);
       else gallery.add(detail);
     });
+
+    // its own event type: the preview listener drops anything without a filename
+    api.addEventListener(COST_EVENT, (event) => {
+      const detail = event.detail || {};
+      costFor(detail.node)?.fill(detail);
+    });
   },
 
   async nodeCreated(node) {
     if (node.comfyClass !== NODE_ID) return;
     try {
       const gallery = galleryOf(node);
+      // widget order is creation order, so this lands under the previews
+      const cost = costOf(node);
 
       // after a reload the results come back with the node's stored ui payload
       const onExecuted = node.onExecuted;
@@ -390,13 +590,16 @@ app.registerExtension({
           gallery.fill(message.m2p_preview);
           gallery.setVisible(true);
         }
+        if (message?.m2p_cost) cost.fill(message.m2p_cost);
         return result;
       };
 
       const onRemoved = node.onRemoved;
       node.onRemoved = function () {
         galleries.delete(gallery);
+        panels.delete(cost);
         delete node._m2pGallery;
+        delete node._m2pCost;
         return onRemoved?.apply(this, arguments);
       };
     } catch (error) {

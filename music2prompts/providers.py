@@ -123,12 +123,17 @@ class _CloudClient:
         timeout: int = 300,
         retries: int = 2,
         verbose: bool = False,
+        ledger=None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = (api_key or "").strip()
         self.timeout = max(10, int(timeout))
         self.retries = max(0, int(retries))
         self.verbose = bool(verbose)
+        #: Where the cost of every reply is recorded. None = nobody is counting.
+        self.ledger = ledger
+        self._stage = ""
+        self._attempt = 1
         if not self.api_key:
             raise ProviderError(
                 f"{PREFIX} no API key for '{self.name}'. Paste one into the node or set "
@@ -162,9 +167,26 @@ class _CloudClient:
                 f"{PREFIX} {self.name} returned HTTP {response.status_code} for {path}: {response.text[:400]}"
             )
         try:
-            return response.json()
+            body = response.json()
         except ValueError as exc:
             raise ProviderError(f"{PREFIX} {self.name} returned no JSON: {response.text[:200]}") from exc
+        # Recorded here rather than around chat_json because an attempt can answer HTTP 200
+        # and still raise further down (bad JSON, a refusal, an empty block) - those tokens
+        # were generated, so they were charged, and a recorder further out would miss them.
+        self._record(payload, body)
+        return body
+
+    def _record(self, payload: dict, body: Any) -> None:
+        """Best-effort: no accounting problem is worth losing a paid-for reply over."""
+        if self.ledger is None:
+            return
+        try:
+            usage = (body or {}).get("usage") if isinstance(body, dict) else None
+            self.ledger.record_llm(
+                self.name, str(payload.get("model") or ""), usage or {}, self._stage, self._attempt
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            warn(f"could not record the cost of a {self.name} call: {exc}")
 
     def _once(self, system: str, user: str, schema: dict | None, images: list[str] | None, **kwargs) -> Any:
         raise NotImplementedError
@@ -184,9 +206,11 @@ class _CloudClient:
     ) -> Any:
         attempts = self.retries + 1
         last_error: Exception | None = None
+        self._stage = stage
         for attempt in range(attempts):
             # the final retry drops the schema and parses the reply loosely
             use_schema = schema if (attempts == 1 or attempt < attempts - 1) else None
+            self._attempt = attempt + 1
             try:
                 return self._once(
                     system=system,
@@ -361,18 +385,23 @@ def make_llm_client(
     timeout: int = 300,
     retries: int = 2,
     verbose: bool = False,
+    ledger=None,
 ):
     """Build the client for ``provider``; the key falls back to the environment."""
     provider = (provider or "lmstudio").strip().lower()
     if provider == "lmstudio":
-        return LMStudioClient(lm_url, api_key, timeout=timeout, retries=retries, verbose=verbose)
+        return LMStudioClient(
+            lm_url, api_key, timeout=timeout, retries=retries, verbose=verbose, ledger=ledger
+        )
     key = resolve_key(provider, api_key)
     if provider == "openrouter":
-        return OpenAICompatClient(OPENROUTER_URL, key, timeout, retries, verbose, name="openrouter")
+        return OpenAICompatClient(
+            OPENROUTER_URL, key, timeout, retries, verbose, ledger=ledger, name="openrouter"
+        )
     if provider == "openai":
-        return OpenAICompatClient(OPENAI_URL, key, timeout, retries, verbose, name="openai")
+        return OpenAICompatClient(OPENAI_URL, key, timeout, retries, verbose, ledger=ledger, name="openai")
     if provider == "anthropic":
-        return AnthropicClient(ANTHROPIC_URL, key, timeout, retries, verbose)
+        return AnthropicClient(ANTHROPIC_URL, key, timeout, retries, verbose, ledger=ledger)
     raise ProviderError(f"{PREFIX} unknown LLM provider '{provider}'. Pick one of {LLM_PROVIDERS}.")
 
 

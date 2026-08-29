@@ -58,8 +58,8 @@ def record(client, result):
     """Capture what ``run`` would submit instead of talking to fal."""
     seen: dict = {}
 
-    def fake_run(model, payload, optional_keys=(), spare=None):
-        seen.update(model=model, payload=payload, optional=optional_keys, spare=spare)
+    def fake_run(model, payload, optional_keys=(), spare=None, label="", kind="image"):
+        seen.update(model=model, payload=payload, optional=optional_keys, spare=spare, label=label, kind=kind)
         return result
 
     client.run = fake_run  # type: ignore[assignment]
@@ -67,9 +67,11 @@ def record(client, result):
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, body: dict | bytes) -> None:
+    def __init__(self, status_code: int, body: dict | bytes, headers: dict | None = None) -> None:
         self.status_code = status_code
         self._body = body
+        # fal reports what it billed in a response header, so the stand-in needs one
+        self.headers = headers or {}
         self.text = body.decode("utf-8", "replace") if isinstance(body, bytes) else json.dumps(body)
         self.content = body if isinstance(body, bytes) else json.dumps(body).encode()
 
