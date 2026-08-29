@@ -773,21 +773,45 @@ def placeholder_image(aspect_ratio: str = "16:9", base: int = 512):
     return torch.zeros(1, height, width, 3, dtype=torch.float32)
 
 
-def save_videos(
+# what the provider actually handed back, so a JPEG is not saved as a .png
+IMAGE_SIGNATURES = (
+    (b"\x89PNG\r\n", "png"),
+    (b"\xff\xd8\xff", "jpg"),
+    (b"GIF8", "gif"),
+)
+
+
+def image_extension(payload: bytes) -> str:
+    for signature, extension in IMAGE_SIGNATURES:
+        if payload.startswith(signature):
+            return extension
+    if payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
+        return "webp"
+    return "png"
+
+
+def run_stamp() -> str:
+    """One timestamp per run, so every file it writes sorts together."""
+    return time.strftime("%Y%m%d-%H%M%S")
+
+
+def save_media(
     payloads: list[bytes | None],
-    prefix: str = "music2prompts",
+    prefix: str,
+    kind: str,
+    extension: str = "",
     temporary: bool = False,
     reuse: dict[int, str] | None = None,
+    stamp: str = "",
 ) -> list[str]:
-    """Write finished clips to disk; returns their paths.
+    """Write finished renders to disk; returns their paths, skipping the ones that failed.
 
-    They always land somewhere - assembling the final film needs real files - but
-    ``temporary`` puts them in ComfyUI's temp folder instead of its output folder.
-    ``reuse`` names files the live preview already wrote there, so a clip is not
-    written to the temp folder twice.
+    ``temporary`` puts them in ComfyUI's temp folder instead of its output folder, and
+    ``reuse`` names files the live preview already wrote there, so nothing is written to
+    the temp folder twice. A shared ``stamp`` keeps one run's files next to each other.
     """
     directory = output_directory(temporary=temporary)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
+    stamp = stamp or run_stamp()
     paths: list[str] = []
     for index, payload in enumerate(payloads):
         if not payload:
@@ -796,7 +820,8 @@ def save_videos(
         if written and os.path.exists(written):
             paths.append(written)
             continue
-        path = os.path.join(directory, f"{prefix}_{stamp}_shot{index + 1:03d}.mp4")
+        suffix = extension or image_extension(payload)
+        path = os.path.join(directory, f"{prefix}_{stamp}_{kind}{index + 1:03d}.{suffix}")
         try:
             with open(path, "wb") as handle:
                 handle.write(payload)
@@ -804,6 +829,28 @@ def save_videos(
         except OSError as exc:
             warn(f"could not write {path}: {exc}")
     return paths
+
+
+def save_videos(
+    payloads: list[bytes | None],
+    prefix: str = "music2prompts",
+    temporary: bool = False,
+    reuse: dict[int, str] | None = None,
+    stamp: str = "",
+) -> list[str]:
+    """Write finished clips to disk. They always land somewhere - assembling the final
+    film needs real files - and ``temporary`` only chooses which folder."""
+    return save_media(payloads, prefix, "shot", "mp4", temporary, reuse, stamp)
+
+
+def save_images(
+    payloads: list[bytes | None],
+    prefix: str = "music2prompts",
+    kind: str = "image",
+    stamp: str = "",
+) -> list[str]:
+    """Write rendered frames into ComfyUI's output folder, in the format they arrived in."""
+    return save_media(payloads, prefix, kind, "", temporary=False, stamp=stamp)
 
 
 # --------------------------------------------------------------------------- model probing

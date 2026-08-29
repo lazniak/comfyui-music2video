@@ -322,6 +322,13 @@ class Music2PromptsLM(io.ComfyNode):
                     ),
                 ),
                 io.Boolean.Input(
+                    "save_rendered_images", default=True, advanced=True,
+                    tooltip=(
+                        "Write the rendered start frames and subject sheets into "
+                        "ComfyUI/output/music2prompts. They are paid for either way."
+                    ),
+                ),
+                io.Boolean.Input(
                     "save_rendered_video", default=True, advanced=True,
                     tooltip="Write the clips into ComfyUI/output/music2prompts (needed for the VIDEO output).",
                 ),
@@ -441,12 +448,19 @@ class Music2PromptsLM(io.ComfyNode):
                     tooltip="Extra style clause injected into every H3 prompt.",
                 ),
                 io.Boolean.Input(
-                    "save_json", default=False, advanced=True,
-                    tooltip="Write the full analysis to the ComfyUI output folder.",
+                    "save_json", default=True, advanced=True,
+                    tooltip="Write the full analysis JSON to ComfyUI/output/music2prompts.",
+                ),
+                io.Boolean.Input(
+                    "save_transcript", default=True, advanced=True,
+                    tooltip="Write the Whisper transcript, with per-shot timings, next to the JSON.",
                 ),
                 io.String.Input(
                     "filename_prefix", default="music2prompts", advanced=True,
-                    tooltip="Prefix for the saved JSON file.",
+                    tooltip=(
+                        "Prefix for everything this run writes. One timestamp is shared by the "
+                        "images, clips, transcript and JSON, so a run's files sort together."
+                    ),
                 ),
                 io.Boolean.Input(
                     "verbose", default=False, advanced=True,
@@ -517,6 +531,7 @@ class Music2PromptsLM(io.ComfyNode):
         video_prompt_source: str = "i2va",
         render_subject_sheets: bool = False,
         live_preview: bool = True,
+        save_rendered_images: bool = True,
         save_rendered_video: bool = True,
         concat_video: bool = True,
         final_audio: str = "music",
@@ -556,12 +571,14 @@ class Music2PromptsLM(io.ComfyNode):
         negative_prompt_base: str = DEFAULT_NEGATIVE,
         include_dialogue: bool = True,
         h3_style_directive: str = "",
-        save_json: bool = False,
+        save_json: bool = True,
+        save_transcript: bool = True,
         filename_prefix: str = "music2prompts",
         verbose: bool = False,
         reference_images=None,
     ) -> io.NodeOutput:
         started = time.perf_counter()
+        stamp = render_module.run_stamp()  # shared by every file this run writes
         provider = (llm_provider or "lmstudio").strip().lower()
         wants_images = (image_provider or "none").lower() not in {"", "none"}
         wants_video = (video_provider or "none").lower() not in {"", "none"}
@@ -856,6 +873,13 @@ class Music2PromptsLM(io.ComfyNode):
                 subject_images_out = [
                     render_module.image_bytes_to_tensor(data) for data in subject_payloads if data
                 ]
+            if save_rendered_images:
+                written = render_module.save_images(image_payloads, filename_prefix, "frame", stamp)
+                written += render_module.save_images(
+                    subject_payloads, filename_prefix, "subject", stamp
+                )
+                if written:
+                    log(f"{len(written)} image(s) written to {os.path.dirname(written[0])}")
             log(f"{len(images_out)}/{len(start_frames)} start frames rendered")
             _interrupt_check()
 
@@ -907,6 +931,7 @@ class Music2PromptsLM(io.ComfyNode):
                 filename_prefix,
                 temporary=not save_rendered_video,
                 reuse=feed.paths("video"),
+                stamp=stamp,
             )
             videos_out = cls._videos_from_paths(video_paths)
             log(f"{sum(1 for item in payloads if item)}/{len(video_requests)} clips rendered")
@@ -965,7 +990,15 @@ class Music2PromptsLM(io.ComfyNode):
         }
         analysis_json = json.dumps(debug, ensure_ascii=False, indent=2)
         if save_json:
-            cls._save_json(analysis_json, filename_prefix)
+            cls._save_text(analysis_json, filename_prefix, "analysis", "json", stamp)
+        if save_transcript:
+            cls._save_text(
+                cls._transcript_document(transcription, slots, i2va, start_frames),
+                filename_prefix,
+                "transcript",
+                "txt",
+                stamp,
+            )
 
         log(f"done in {time.perf_counter() - started:.1f}s - {len(slots)} shots, {len(subject_names)} subjects")
         return io.NodeOutput(
@@ -1216,21 +1249,58 @@ class Music2PromptsLM(io.ComfyNode):
         return ", ".join(piece for piece in pieces if piece).strip(", ")
 
     @staticmethod
-    def _save_json(payload: str, prefix: str) -> None:
-        try:
-            import folder_paths  # type: ignore
-
-            directory = folder_paths.get_output_directory()
-        except Exception:
-            directory = os.getcwd()
-        name = f"{prefix or 'music2prompts'}_{time.strftime('%Y%m%d-%H%M%S')}.json"
-        path = os.path.join(directory, name)
+    def _save_text(payload: str, prefix: str, kind: str, extension: str, stamp: str = "") -> str:
+        """Write one sidecar file next to the run's images and clips."""
+        directory = render_module.output_directory()
+        stamp = stamp or render_module.run_stamp()
+        path = os.path.join(directory, f"{prefix or 'music2prompts'}_{stamp}_{kind}.{extension}")
         try:
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(payload)
-            log(f"analysis written to {path}")
+            log(f"{kind} written to {path}")
+            return path
         except OSError as exc:
             warn(f"could not write {path}: {exc}")
+            return ""
+
+    @staticmethod
+    def _transcript_document(
+        transcription: dict, slots: list[ShotSlot], video_prompts: list[str], image_prompts: list[str]
+    ) -> str:
+        """The transcript as a readable document, cut into the same shots as the film.
+
+        The bare Whisper text is on the node's own output; what is worth keeping on disk
+        is the text lined up with the shots it belongs to, next to the prompt each shot
+        was rendered from - that is what you read when a shot came out wrong.
+        """
+        words = as_list(transcription.get("words"))
+        lines = [
+            f"language: {transcription.get('language') or 'unknown'}",
+            f"shots: {len(slots)}",
+            "",
+            "=== transcript ===",
+            (transcription.get("text") or "").strip() or "(no speech detected)",
+            "",
+            "=== per shot ===",
+        ]
+        for index, slot in enumerate(slots):
+            spoken = " ".join(
+                str(word.get("word", "")).strip()
+                for word in words
+                if isinstance(word, dict)
+                and slot.start <= float(word.get("start", -1)) < slot.end
+            ).strip()
+            lines += [
+                "",
+                f"[shot {slot.index}] {slot.start:.2f}s - {slot.end:.2f}s "
+                f"({slot.duration:.2f}s, {slot.section or 'section n/a'})",
+                f"  lyrics: {spoken or '(instrumental)'}",
+            ]
+            if index < len(image_prompts):
+                lines.append(f"  image : {image_prompts[index]}")
+            if index < len(video_prompts):
+                lines.append(f"  video : {video_prompts[index].splitlines()[0][:200]}")
+        return "\n".join(lines) + "\n"
 
 
 class _ProgressReporter:
