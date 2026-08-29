@@ -155,24 +155,37 @@ class LMStudioClient:
         )
 
     @staticmethod
-    def probe_model_keys(base_url: str = DEFAULT_URL, timeout: float = 1.5) -> list[str]:
-        """Best-effort model list for building the node schema. Never raises."""
-        try:
-            import requests
+    def probe_model_keys(base_url: str = DEFAULT_URL, timeout: float = 0.8) -> list[str]:
+        """Best-effort model list. Never raises.
 
-            for path, extract in (
-                ("/api/v1/models", lambda d: [m.get("key") for m in d.get("models", [])]),
-                ("/api/v0/models", lambda d: [m.get("id") for m in d.get("data", [])]),
-            ):
-                try:
-                    response = requests.get(f"{base_url.rstrip('/')}{path}", timeout=timeout)
-                    if response.status_code >= 400:
-                        continue
-                    keys = [str(key) for key in extract(response.json()) if key]
+        Both API versions are tried at the same time: when LM Studio is not running
+        each one costs a full connect timeout, and paying that twice in a row was the
+        single slowest thing in the pack.
+        """
+        endpoints = (
+            ("/api/v1/models", lambda d: [m.get("key") for m in d.get("models", [])]),
+            ("/api/v0/models", lambda d: [m.get("id") for m in d.get("data", [])]),
+        )
+
+        def fetch(item) -> list[str]:
+            path, extract = item
+            try:
+                import requests
+
+                response = requests.get(f"{base_url.rstrip('/')}{path}", timeout=timeout)
+                if response.status_code >= 400:
+                    return []
+                return [str(key) for key in extract(response.json()) if key]
+            except Exception:
+                return []
+
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                for keys in pool.map(fetch, endpoints):
                     if keys:
                         return keys
-                except Exception:
-                    continue
         except Exception:
             pass
         return []

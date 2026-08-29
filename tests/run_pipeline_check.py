@@ -78,6 +78,7 @@ def check_lists_are_aligned(result) -> None:
         images,
         subject_images,
         videos,
+        final_video,
     ) = result.args
     count = len(indices)
     assert count >= 3, f"expected several shots, got {count}"
@@ -89,6 +90,7 @@ def check_lists_are_aligned(result) -> None:
     assert images == [] and subject_images == [] and videos == [], (
         "nothing may be rendered while both providers are 'none'"
     )
+    assert final_video is None, "there is no film to assemble without clips"
     json.loads(analysis_json)
 
 

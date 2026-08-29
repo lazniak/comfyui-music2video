@@ -56,8 +56,9 @@ FALLBACK_OPENROUTER_VIDEO = [
 # fal video endpoints that take subject references rather than a first frame
 REFERENCE_HINTS = ("reference-to-video", "ref2v", "/reference")
 
-_PROBE_CACHE: dict[str, list[str]] = {}
-
+# Image and video providers take a 32-bit seed. ComfyUI's seed widget goes up to
+# 2**60, which OpenRouter rejects outright ("seed must be -1 or in [0,2147483647]").
+MAX_SEED = 2**31 - 1
 
 class RenderError(RuntimeError):
     pass
@@ -102,6 +103,16 @@ def aspect_to_size(aspect_ratio: str, base: int = 1024) -> tuple[int, int]:
     return snap(width), snap(height)
 
 
+def clamp_seed(seed: int | None) -> int | None:
+    """Fold ComfyUI's 64-bit seed into the 32-bit range every media provider accepts."""
+    if seed is None:
+        return None
+    value = int(seed)
+    if value < 0:
+        value = -value
+    return value % (MAX_SEED + 1)
+
+
 def data_uri(payload: bytes, media_type: str = "image/png") -> str:
     return f"data:{media_type};base64,{base64.b64encode(payload).decode('ascii')}"
 
@@ -132,8 +143,17 @@ def output_directory(subfolder: str = "music2prompts") -> str:
     return path
 
 
-def _in_parallel(jobs: list[Callable[[], Any]], concurrency: int, label: str) -> list[Any]:
-    """Run jobs concurrently, keep order, turn failures into ``None``."""
+def _in_parallel(
+    jobs: list[Callable[[], Any]],
+    concurrency: int,
+    label: str,
+    errors: list[Exception] | None = None,
+) -> list[Any]:
+    """Run jobs concurrently, keep order, turn failures into ``None``.
+
+    Failures are also appended to ``errors`` so the caller can tell "nothing rendered
+    because the key is wrong" from "one shot tripped the safety checker".
+    """
     if not jobs:
         return []
     workers = max(1, min(int(concurrency or 1), len(jobs)))
@@ -144,6 +164,8 @@ def _in_parallel(jobs: list[Callable[[], Any]], concurrency: int, label: str) ->
             results[index] = jobs[index]()
         except Exception as exc:
             warn(f"{label} {index + 1}/{len(jobs)} failed: {exc}")
+            if errors is not None:
+                errors.append(exc)
 
     if workers == 1:
         for index in range(len(jobs)):
@@ -240,7 +262,7 @@ class FalClient:
         if request.negative:
             payload["negative_prompt"] = request.negative
         if request.seed is not None:
-            payload["seed"] = int(request.seed)
+            payload["seed"] = clamp_seed(request.seed)
         if request.references:
             payload["image_urls"] = list(request.references)
         result = self.run(
@@ -264,7 +286,7 @@ class FalClient:
             "duration": max(1, int(round(request.seconds))),
         }
         if request.seed is not None:
-            payload["seed"] = int(request.seed)
+            payload["seed"] = clamp_seed(request.seed)
         wants_references = any(hint in model for hint in REFERENCE_HINTS)
         if wants_references and request.references:
             payload["reference_image_urls"] = list(request.references)
@@ -342,7 +364,7 @@ class OpenRouterMediaClient:
             "output_format": "png",
         }
         if request.seed is not None:
-            payload["seed"] = int(request.seed)
+            payload["seed"] = clamp_seed(request.seed)
         if request.references:
             payload["input_references"] = self._references(request.references)
         response = requests.post(
@@ -371,7 +393,7 @@ class OpenRouterMediaClient:
             "aspect_ratio": request.aspect_ratio,
         }
         if request.seed is not None:
-            payload["seed"] = int(request.seed)
+            payload["seed"] = clamp_seed(request.seed)
         if request.first_frame:
             payload["frame_images"] = [
                 {
@@ -423,20 +445,41 @@ def make_media_client(provider: str, api_key: str = "", timeout: int = 600, verb
     raise RenderError(f"{PREFIX} unknown media provider '{provider}'. Pick one of {MEDIA_PROVIDERS}.")
 
 
-def render_images(client, model: str, requests_: list[ImageRequest], concurrency: int = 2) -> list[bytes | None]:
+def render_images(
+    client,
+    model: str,
+    requests_: list[ImageRequest],
+    concurrency: int = 2,
+    errors: list[Exception] | None = None,
+) -> list[bytes | None]:
     if client is None or not requests_:
         return []
     log(f"rendering {len(requests_)} image(s) with {client.name}/{model} (concurrency {concurrency})")
     jobs = [lambda request=request: client.image(model, request) for request in requests_]
-    return _in_parallel(jobs, concurrency, "image")
+    return _in_parallel(jobs, concurrency, "image", errors)
 
 
-def render_videos(client, model: str, requests_: list[VideoRequest], concurrency: int = 2) -> list[bytes | None]:
+def render_videos(
+    client,
+    model: str,
+    requests_: list[VideoRequest],
+    concurrency: int = 2,
+    errors: list[Exception] | None = None,
+) -> list[bytes | None]:
     if client is None or not requests_:
         return []
     log(f"rendering {len(requests_)} video(s) with {client.name}/{model} (concurrency {concurrency})")
     jobs = [lambda request=request: client.video(model, request) for request in requests_]
-    return _in_parallel(jobs, concurrency, "video")
+    return _in_parallel(jobs, concurrency, "video", errors)
+
+
+def placeholder_image(aspect_ratio: str = "16:9", base: int = 512):
+    """Black frame standing in for a shot whose render failed, so the IMAGE output
+    stays aligned with the shot list instead of silently losing an entry."""
+    import torch
+
+    width, height = aspect_to_size(aspect_ratio, base=base)
+    return torch.zeros(1, height, width, 3, dtype=torch.float32)
 
 
 def save_videos(payloads: list[bytes | None], prefix: str = "music2prompts") -> list[str]:
@@ -460,18 +503,6 @@ def save_videos(payloads: list[bytes | None], prefix: str = "music2prompts") -> 
 # --------------------------------------------------------------------------- model probing
 
 
-def _cached(name: str, probe, fallback: list[str]) -> list[str]:
-    if name in _PROBE_CACHE:
-        return _PROBE_CACHE[name]
-    try:
-        found = [str(item) for item in probe() if item]
-    except Exception:
-        found = []
-    result = found or list(fallback)
-    _PROBE_CACHE[name] = result
-    return result
-
-
 def _fal_index(categories: tuple[str, ...], page_size: int = 60) -> list[str]:
     import requests
 
@@ -489,14 +520,12 @@ def _fal_index(categories: tuple[str, ...], page_size: int = 60) -> list[str]:
     return ids
 
 
-def probe_fal_images() -> list[str]:
-    return _cached("fal_image", lambda: _fal_index(("text-to-image",)), FALLBACK_FAL_IMAGE)
+def probe_fal_images_raw() -> list[str]:
+    return _fal_index(("text-to-image",))
 
 
-def probe_fal_videos() -> list[str]:
-    return _cached(
-        "fal_video", lambda: _fal_index(("image-to-video", "text-to-video")), FALLBACK_FAL_VIDEO
-    )
+def probe_fal_videos_raw() -> list[str]:
+    return _fal_index(("image-to-video", "text-to-video"))
 
 
 def _openrouter_media_models(kind: str) -> list[str]:
@@ -508,10 +537,10 @@ def _openrouter_media_models(kind: str) -> list[str]:
     return [model.get("id") for model in (response.json() or {}).get("data", []) if model.get("id")]
 
 
-def probe_openrouter_images() -> list[str]:
-    return _cached("or_image", lambda: _openrouter_media_models("images"), FALLBACK_OPENROUTER_IMAGE)
+def probe_openrouter_images_raw() -> list[str]:
+    return _openrouter_media_models("images")
 
 
-def probe_openrouter_videos() -> list[str]:
-    return _cached("or_video", lambda: _openrouter_media_models("videos"), FALLBACK_OPENROUTER_VIDEO)
+def probe_openrouter_videos_raw() -> list[str]:
+    return _openrouter_media_models("videos")
 

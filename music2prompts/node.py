@@ -10,20 +10,16 @@ from concurrent.futures import ThreadPoolExecutor
 from comfy_api.latest import io
 
 from . import asr as asr_module
+from . import model_cache
 from . import music_dsp
 from . import render as render_module
+from . import video as video_module
 from .h3_format import H3Shot, Speaker, Subject, render_i2va, render_ref2va
 from .llm_stages import StageRunner, load_h3_guide
 from .lmstudio import DEFAULT_URL, FALLBACK_MODELS, LMStudioClient
-from .providers import (
-    FALLBACK_ANTHROPIC,
-    FALLBACK_OPENAI,
-    FALLBACK_OPENROUTER,
-    LLM_PROVIDERS,
-    llm_model_options,
-    make_llm_client,
-)
+from .providers import LLM_PROVIDERS, make_llm_client
 from .render import MEDIA_PROVIDERS, ImageRequest, VideoRequest
+from .video import AUDIO_MODES, FIT_MODES
 from .shots import ShotSlot, attach_lyrics, plan_shots
 from .util import (
     PREFIX,
@@ -46,41 +42,15 @@ DEFAULT_NEGATIVE = (
 BASE_STAGES = 7
 
 
-def _model_options() -> list[str]:
-    keys = LMStudioClient.probe_model_keys(DEFAULT_URL)
-    for fallback in FALLBACK_MODELS:
-        if fallback not in keys:
-            keys.append(fallback)
-    return keys or list(FALLBACK_MODELS)
-
-
 def _schema_options() -> dict[str, list[str]]:
-    """Probe every provider once, in parallel, while the node schema is built.
+    """Dropdown contents, read from the shared cache.
 
-    Each probe has a short timeout and falls back to a static list, so a missing
-    key or an offline provider costs a moment, never an exception.
+    ComfyUI re-runs ``define_schema`` on every /object_info request and twice per
+    queued prompt, so this must not touch the network. The cache is filled by the
+    background warm-up and by the pack's HTTP route; the lists never shrink, so a
+    model picked in a saved workflow stays selectable.
     """
-    tasks = {
-        "lmstudio": _model_options,
-        "openrouter": lambda: llm_model_options("openrouter") or list(FALLBACK_OPENROUTER),
-        "openai": lambda: llm_model_options("openai") or list(FALLBACK_OPENAI),
-        "anthropic": lambda: llm_model_options("anthropic") or list(FALLBACK_ANTHROPIC),
-        "fal_image": render_module.probe_fal_images,
-        "openrouter_image": render_module.probe_openrouter_images,
-        "fal_video": render_module.probe_fal_videos,
-        "openrouter_video": render_module.probe_openrouter_videos,
-    }
-    results: dict[str, list[str]] = {}
-
-    def run(name: str) -> None:
-        try:
-            results[name] = list(tasks[name]())
-        except Exception:
-            results[name] = []
-
-    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
-        list(pool.map(run, tasks))
-    return {name: values or ["(none found)"] for name, values in results.items()}
+    return {kind: model_cache.snapshot(kind) or ["(none found)"] for kind in model_cache.KINDS}
 
 
 def _interrupt_check() -> None:
@@ -133,15 +103,15 @@ class Music2PromptsLM(io.ComfyNode):
                     tooltip="Model served by LM Studio. The list is read from the running server.",
                 ),
                 io.Combo.Input(
-                    "openrouter_model", options=options["openrouter"],
+                    "openrouter_model", options=options["openrouter_llm"],
                     tooltip="Model used when llm_provider = openrouter.",
                 ),
                 io.Combo.Input(
-                    "openai_model", options=options["openai"],
+                    "openai_model", options=options["openai_llm"],
                     tooltip="Model used when llm_provider = openai.",
                 ),
                 io.Combo.Input(
-                    "anthropic_model", options=options["anthropic"],
+                    "anthropic_model", options=options["anthropic_llm"],
                     tooltip=(
                         "Model used when llm_provider = anthropic. Structured stages go through forced "
                         "tool use; temperature is not sent because current Claude models reject it."
@@ -347,6 +317,32 @@ class Music2PromptsLM(io.ComfyNode):
                     "save_rendered_video", default=True, advanced=True,
                     tooltip="Write the clips into ComfyUI/output/music2prompts (needed for the VIDEO output).",
                 ),
+                io.Boolean.Input(
+                    "concat_video", default=True, advanced=True,
+                    tooltip=(
+                        "Glue the rendered clips into one finished film on the final_video output. "
+                        "Every clip is trimmed or held to the exact length of its shot."
+                    ),
+                ),
+                io.Combo.Input(
+                    "final_audio", options=list(AUDIO_MODES), default="music", advanced=True,
+                    tooltip=(
+                        "Soundtrack of the finished film: 'music' uses the track you fed in, "
+                        "'clips' keeps the audio the video model generated, 'none' leaves it silent."
+                    ),
+                ),
+                io.Combo.Input(
+                    "final_fit", options=list(FIT_MODES), default="pad", advanced=True,
+                    tooltip="What to do with a clip whose aspect differs: letterbox it, stretch it or crop it.",
+                ),
+                io.Float.Input(
+                    "final_fps", default=0.0, min=0.0, max=120.0, step=1.0, advanced=True,
+                    tooltip="Frame rate of the finished film. 0 = the fastest rate among the clips.",
+                ),
+                io.Int.Input(
+                    "final_crf", default=20, min=0, max=51, advanced=True,
+                    tooltip="x264 quality of the finished film: lower is better and bigger. 20 is a good default.",
+                ),
                 io.Int.Input(
                     "render_timeout", default=600, min=60, max=3600, advanced=True,
                     tooltip="Seconds to wait for one image or clip before giving up on it.",
@@ -470,6 +466,7 @@ class Music2PromptsLM(io.ComfyNode):
                 io.Image.Output(display_name="images", is_output_list=True),
                 io.Image.Output(display_name="subject_images", is_output_list=True),
                 io.Video.Output(display_name="videos", is_output_list=True),
+                io.Video.Output(display_name="final_video"),
             ],
         )
 
@@ -510,6 +507,11 @@ class Music2PromptsLM(io.ComfyNode):
         video_prompt_source: str = "i2va",
         render_subject_sheets: bool = False,
         save_rendered_video: bool = True,
+        concat_video: bool = True,
+        final_audio: str = "music",
+        final_fit: str = "pad",
+        final_fps: float = 0.0,
+        final_crf: int = 20,
         render_timeout: int = 600,
         lm_url: str = DEFAULT_URL,
         lm_api_key: str = "",
@@ -765,6 +767,8 @@ class Music2PromptsLM(io.ComfyNode):
         image_payloads: list[bytes | None] = []
         subject_payloads: list[bytes | None] = []
         video_paths: list[str] = []
+        final_video = None
+        final_info: dict = {}
 
         if wants_images:
             progress.step(f"rendering {len(start_frames)} start frame(s) with {image_provider}")
@@ -772,6 +776,7 @@ class Music2PromptsLM(io.ComfyNode):
                 image_provider, fal_api_key if image_provider == "fal" else openrouter_api_key,
                 timeout=render_timeout, verbose=verbose,
             )
+            image_errors: list[Exception] = []
             image_payloads = render_module.render_images(
                 image_client,
                 image_model,
@@ -787,8 +792,21 @@ class Music2PromptsLM(io.ComfyNode):
                     for index, prompt in enumerate(start_frames)
                 ],
                 render_concurrency,
+                image_errors,
             )
-            images_out = [render_module.image_bytes_to_tensor(data) for data in image_payloads if data]
+            if not any(image_payloads):
+                raise RuntimeError(
+                    f"{PREFIX} every image render failed on {image_provider}/{image_model}. "
+                    f"First error: {image_errors[0] if image_errors else 'unknown'}"
+                )
+            # a failed shot keeps its slot as a black frame, so `images` stays aligned
+            # with the shot list instead of silently shifting every later shot
+            images_out = [
+                render_module.image_bytes_to_tensor(data)
+                if data
+                else render_module.placeholder_image(aspect_ratio)
+                for data in image_payloads
+            ]
             if render_subject_sheets and subject_prompts:
                 subject_payloads = render_module.render_images(
                     image_client,
@@ -836,14 +854,34 @@ class Music2PromptsLM(io.ComfyNode):
                         label=f"shot {slot.index}",
                     )
                 )
+            video_errors: list[Exception] = []
             payloads = render_module.render_videos(
-                video_client, video_model, video_requests, render_concurrency
+                video_client, video_model, video_requests, render_concurrency, video_errors
             )
+            if not any(payloads):
+                raise RuntimeError(
+                    f"{PREFIX} every clip failed on {video_provider}/{video_model}. "
+                    f"First error: {video_errors[0] if video_errors else 'unknown'}"
+                )
+            rendered_seconds = [slot.duration for slot, item in zip(slots, payloads) if item]
             if save_rendered_video:
                 video_paths = render_module.save_videos(payloads, filename_prefix)
                 videos_out = cls._videos_from_paths(video_paths)
             log(f"{sum(1 for item in payloads if item)}/{len(video_requests)} clips rendered")
             _interrupt_check()
+
+            if concat_video and video_paths:
+                final_video, final_info = cls._concat(
+                    video_paths,
+                    rendered_seconds,
+                    audio if final_audio == "music" else None,
+                    final_audio,
+                    final_fit,
+                    final_fps,
+                    final_crf,
+                    filename_prefix,
+                )
+                _interrupt_check()
 
         debug = {
             "duration": round(duration, 3),
@@ -868,6 +906,7 @@ class Music2PromptsLM(io.ComfyNode):
                 "video_prompt_source": video_prompt_source,
                 "video_paths": video_paths,
                 "concurrency": render_concurrency,
+                "final_video": final_info,
             },
             "settings": {
                 "llm_provider": provider,
@@ -904,6 +943,7 @@ class Music2PromptsLM(io.ComfyNode):
             images_out,
             subject_images_out,
             videos_out,
+            final_video,
         )
 
     # ------------------------------------------------------------------ helpers
@@ -921,11 +961,65 @@ class Music2PromptsLM(io.ComfyNode):
         model = (cloud_models.get(provider) or "").strip()
         if not model or model.startswith("("):
             raise ValueError(
-                f"{PREFIX} pick a model for '{provider}' in the Advanced section "
-                f"({provider}_model). The list was empty when the node was loaded - "
-                "add the API key to the environment and restart ComfyUI to populate it."
+                f"{PREFIX} pick a model for '{provider}' ({provider}_model). The list was "
+                "empty when the node was loaded - add the API key, then right-click the node "
+                "and choose 'Refresh model lists'."
             )
         return model, keys.get(provider, "")
+
+    @classmethod
+    def validate_inputs(  # noqa: PLR0913 - one argument per model dropdown, by design
+        cls,
+        lm_model=None,
+        openrouter_model=None,
+        openai_model=None,
+        anthropic_model=None,
+        fal_image_model=None,
+        openrouter_image_model=None,
+        fal_video_model=None,
+        openrouter_video_model=None,
+    ) -> bool:
+        """Let the model dropdowns hold a value the schema snapshot has not seen yet.
+
+        The lists refresh from the pack's HTTP route while ComfyUI runs, so the value
+        the user picked can be newer than the options ComfyUI last read. Naming these
+        inputs here - and only these - skips the "Value not in list" check for them
+        without weakening validation anywhere else on the node.
+        """
+        return True
+
+    @classmethod
+    def _concat(
+        cls,
+        paths: list[str],
+        seconds: list[float],
+        audio,
+        audio_mode: str,
+        fit: str,
+        fps: float,
+        crf: int,
+        prefix: str,
+    ):
+        """Glue the clips into one film. Returns (VIDEO or None, info dict)."""
+        target = os.path.join(
+            render_module.output_directory(),
+            f"{prefix or 'music2prompts'}_{time.strftime('%Y%m%d-%H%M%S')}_final.mp4",
+        )
+        try:
+            info = video_module.concat_clips(
+                paths,
+                target,
+                audio=audio,
+                audio_mode=audio_mode,
+                clip_durations=seconds,
+                fps=float(fps) or None,
+                fit=fit,
+                crf=int(crf),
+            )
+        except Exception as exc:
+            warn(f"could not assemble the final video: {exc}")
+            return None, {"error": str(exc)}
+        return (cls._videos_from_paths([info["path"]]) or [None])[0], info
 
     @staticmethod
     def _videos_from_paths(paths: list[str]) -> list:

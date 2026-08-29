@@ -6,12 +6,39 @@ also be imported outside ComfyUI (tests, tooling) without blowing up.
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
-# served to the browser: hides the model widgets of providers you did not select
+# served to the browser: hides the widgets of providers you did not select and
+# refreshes the model dropdowns from the route registered below
 WEB_DIRECTORY = "./web"
 
 __all__ = ["WEB_DIRECTORY", "comfy_entrypoint"]
+
+
+def _bootstrap() -> None:
+    """Register the model-list route and start filling the cache in the background.
+
+    Both are best-effort: outside ComfyUI (tests) there is no server to register on,
+    and a failure here must never cost the user the whole node pack.
+    """
+    try:
+        from .music2prompts import http_routes, model_cache
+    except ImportError:
+        return  # imported outside a package context (tests, tooling) - nothing to do
+    try:
+        http_routes.register()
+        model_cache.warm()
+    except Exception as exc:  # pragma: no cover - defensive
+        import logging
+
+        logging.getLogger("music2prompts").warning(
+            "[Music2Prompts] startup hook failed (%s); the node still works, "
+            "but the model dropdowns will only show their static fallbacks",
+            exc,
+        )
+
+
+_bootstrap()
 
 
 async def comfy_entrypoint():

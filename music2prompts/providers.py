@@ -4,9 +4,10 @@ Every client exposes the same ``chat_json`` signature as :class:`LMStudioClient`
 so :class:`~music2prompts.llm_stages.StageRunner` never knows which one it drives.
 Only ``requests`` is used - no vendor SDK, nothing new to install inside ComfyUI.
 
-Model lists are probed live when the node schema is built. Probing never raises
-and never blocks for long: a provider that is offline or has no key falls back to
-a small static list, and the ``*_model_override`` widgets always win.
+The ``probe_*_raw`` functions do the actual network lookups; nothing calls them
+directly on the schema-building path. They are driven by :mod:`.model_cache`, which
+keeps one TTL cache shared by the node schema and the pack's HTTP route, so a
+dropdown can refresh without restarting ComfyUI.
 """
 
 from __future__ import annotations
@@ -52,8 +53,6 @@ FALLBACK_ANTHROPIC = [
     "claude-haiku-4-5",
     "claude-opus-4-8",
 ]
-
-_PROBE_CACHE: dict[str, list[str]] = {}
 
 
 class ProviderError(RuntimeError):
@@ -389,82 +388,60 @@ def _get_json(url: str, headers: dict[str, str] | None = None, timeout: float = 
     return response.json()
 
 
-def _cached(name: str, probe, fallback: list[str]) -> list[str]:
-    if name in _PROBE_CACHE:
-        return _PROBE_CACHE[name]
-    try:
-        found = [str(item) for item in probe() if item]
-    except Exception:
-        found = []
-    result = found or list(fallback)
-    _PROBE_CACHE[name] = result
-    return result
+def probe_lmstudio_raw() -> list[str]:
+    """Model keys served by LM Studio right now. Never raises."""
+    return LMStudioClient.probe_model_keys(LMSTUDIO_URL, timeout=0.6)
 
 
-def probe_lmstudio() -> list[str]:
-    def run() -> list[str]:
-        return LMStudioClient.probe_model_keys(LMSTUDIO_URL)
-
-    return _cached("lmstudio", run, LMSTUDIO_FALLBACK)
-
-
-def probe_openrouter_llms() -> list[str]:
-    def run() -> list[str]:
-        data = _get_json(f"{OPENROUTER_URL}/models")
-        ids = []
-        for model in data.get("data", []):
-            architecture = model.get("architecture") or {}
-            outputs = architecture.get("output_modalities") or ["text"]
-            if "text" in outputs and "image" not in outputs:
-                ids.append(model.get("id"))
-        return sorted(item for item in ids if item)
-
-    return _cached("openrouter_llm", run, FALLBACK_OPENROUTER)
+def probe_openrouter_llms_raw() -> list[str]:
+    """Text-only models on OpenRouter (public endpoint, no key needed)."""
+    data = _get_json(f"{OPENROUTER_URL}/models")
+    ids = []
+    for model in data.get("data", []):
+        architecture = model.get("architecture") or {}
+        outputs = architecture.get("output_modalities") or ["text"]
+        if "text" in outputs and "image" not in outputs:
+            ids.append(model.get("id"))
+    return sorted(item for item in ids if item)
 
 
-def probe_openai_models(api_key: str = "") -> list[str]:
-    key = resolve_key("openai", api_key)
-
-    def run() -> list[str]:
-        if not key:
-            return []
-        data = _get_json(f"{OPENAI_URL}/models", {"Authorization": f"Bearer {key}"})
-        skip = ("embedding", "tts", "transcribe", "whisper", "image", "audio", "realtime", "moderation", "dall-e")
-        ids = [
-            model.get("id")
-            for model in data.get("data", [])
-            if str(model.get("id", "")).startswith(("gpt", "o1", "o3", "o4", "chatgpt"))
-            and not any(token in str(model.get("id", "")) for token in skip)
-        ]
-        return sorted(item for item in ids if item)
-
-    return _cached("openai_llm", run, FALLBACK_OPENAI)
+def probe_openai_models_raw() -> list[str]:
+    key = resolve_key("openai")
+    if not key:
+        return []
+    data = _get_json(f"{OPENAI_URL}/models", {"Authorization": f"Bearer {key}"})
+    skip = ("embedding", "tts", "transcribe", "whisper", "image", "audio", "realtime", "moderation", "dall-e")
+    ids = [
+        model.get("id")
+        for model in data.get("data", [])
+        if str(model.get("id", "")).startswith(("gpt", "o1", "o3", "o4", "chatgpt"))
+        and not any(token in str(model.get("id", "")) for token in skip)
+    ]
+    return sorted(item for item in ids if item)
 
 
-def probe_anthropic_models(api_key: str = "") -> list[str]:
-    key = resolve_key("anthropic", api_key)
+def probe_anthropic_models_raw() -> list[str]:
+    key = resolve_key("anthropic")
+    if not key:
+        return []
+    data = _get_json(
+        f"{ANTHROPIC_URL}/models?limit=100",
+        {"x-api-key": key, "anthropic-version": ANTHROPIC_VERSION},
+    )
+    return [model.get("id") for model in data.get("data", []) if model.get("id")]
 
-    def run() -> list[str]:
-        if not key:
-            return []
-        data = _get_json(
-            f"{ANTHROPIC_URL}/models?limit=100",
-            {"x-api-key": key, "anthropic-version": ANTHROPIC_VERSION},
-        )
-        return [model.get("id") for model in data.get("data", []) if model.get("id")]
 
-    return _cached("anthropic_llm", run, FALLBACK_ANTHROPIC)
+LLM_KINDS = {
+    "lmstudio": "lmstudio",
+    "openrouter": "openrouter_llm",
+    "openai": "openai_llm",
+    "anthropic": "anthropic_llm",
+}
 
 
 def llm_model_options(provider: str) -> list[str]:
-    """Model list for one provider, used to build the node's dropdowns."""
-    provider = (provider or "").lower()
-    if provider == "lmstudio":
-        return probe_lmstudio()
-    if provider == "openrouter":
-        return probe_openrouter_llms()
-    if provider == "openai":
-        return probe_openai_models()
-    if provider == "anthropic":
-        return probe_anthropic_models()
-    return []
+    """Cached model list for one provider (never touches the network itself)."""
+    from . import model_cache
+
+    kind = LLM_KINDS.get((provider or "").lower())
+    return model_cache.snapshot(kind) if kind else []

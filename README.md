@@ -1,7 +1,7 @@
 # Music → Prompts (LM Studio + Whisper) — ComfyUI node
 
-Turns an audio track into **ready-to-use generation prompts** — and, if you want, into the images and
-clips themselves. One node in, sixteen outputs out.
+Turns an audio track into **ready-to-use generation prompts** — and, if you want, into the images,
+the clips, and the finished cut-together film. One node in, seventeen outputs out.
 
 The analysis is always local and free. The prompt writing is local by default and can be moved to a
 cloud LLM. Rendering is **off by default** and only happens when you pick a provider for it.
@@ -14,6 +14,7 @@ cloud LLM. Rendering is **off by default** and only happens when you pick a prov
 | MiniMax H3 prompt formatting | deterministic Python renderers — the model fills fields, the code builds the exact skeleton |
 | Optional image rendering | **fal.ai** or **OpenRouter** (`image_provider`, default `none`) |
 | Optional video rendering | **fal.ai** or **OpenRouter** (`video_provider`, default `none`) |
+| Assembling the final film | **PyAV** — clips trimmed to their shots, music muxed in, no ffmpeg binary needed |
 
 Built on the ComfyUI **V3 node schema**, so the 30+ secondary settings collapse into the native
 *Advanced* section of the new node layout.
@@ -58,9 +59,16 @@ OpenAI-compatible `/v1/chat/completions` endpoint, so older builds still work fo
 
 ## Providers
 
-Every provider gets **its own model dropdown**, filled in when ComfyUI starts by asking the provider
-what it serves. A small frontend script keeps only the dropdown of the provider you selected on
-screen, so `llm_provider = openrouter` shows `openrouter_model` and hides the rest.
+Every provider gets **its own model dropdown**. The lists are fetched in the background just after
+ComfyUI starts (never while a node is being built, so nothing blocks) and are served from one shared
+cache with a TTL. A small frontend script keeps only the dropdown of the selected provider on screen
+— `llm_provider = openrouter` shows `openrouter_model` and hides the rest — and pulls fresh lists
+from the pack's own route.
+
+**Refreshing without a restart:** right-click the node → **Refresh model lists**. Start LM Studio,
+load a model, export a key — then refresh and it appears. The lists are *monotonic*: a model that was
+offered once is never removed, so a saved workflow keeps validating even when a provider is
+temporarily unreachable.
 
 | Provider | Used for | Key | Endpoint |
 |---|---|---|---|
@@ -71,7 +79,9 @@ screen, so `llm_provider = openrouter` shows `openrouter_model` and hides the re
 | fal.ai | images, video | `FAL_KEY` (or `FAL_API_KEY`) | queue API `https://queue.fal.run/<model>` |
 
 Keys come from the node widgets first and from those environment variables when the widget is empty;
-they are never written into the outputs or into `analysis_json`.
+they are never written into the outputs or into `analysis_json`. Seeds are folded into the 32-bit
+range the media providers accept (ComfyUI's seed widget goes far higher, and OpenRouter rejects it
+outright).
 
 > **These are paid, per-call APIs.** LM Studio and the whole analysis are free; every other provider
 > bills you. Image and video rendering therefore stays `none` until you choose otherwise, and one
@@ -91,6 +101,17 @@ they are never written into the outputs or into `analysis_json`.
   the run: the failing entry is logged and skipped, everything else still comes back.
 * Clips are written to `ComfyUI/output/music2prompts/` and returned on the `videos` output (the
   regular VIDEO type, so `SaveVideo` / `PreviewVideo` accept them).
+* `concat_video` (on by default) glues them into **one finished film** on the `final_video` output.
+  Every clip is placed on a single grid — one size, one frame rate — and trimmed or frozen on its
+  last frame so it lasts exactly as long as its shot; the film therefore stays in sync with the
+  track. Clips whose aspect differs are letterboxed (`final_fit`), and `final_audio` decides the
+  soundtrack: `music` (your track), `clips` (the audio the video model generated) or `none`.
+* When a single shot fails to render, its slot in `images` stays filled with a black frame so the
+  list still lines up with the shots. When *every* shot fails, the node raises with the provider's
+  own error instead of returning empty lists — an empty list wired into another node makes ComfyUI
+  fail with a bare `IndexError: list index out of range`.
+* Do not wire `images` / `videos` / `final_video` while the matching provider is `none`: those
+  outputs are then empty, and the same `IndexError` follows.
 
 ---
 
@@ -150,6 +171,9 @@ they are never written into the outputs or into `analysis_json`.
 `fal_api_key` (all empty = read from the environment), `video_prompt_source` (`i2va` / `ref2va`),
 `render_subject_sheets`, `save_rendered_video`, `render_timeout`.
 
+**Final film** — `concat_video`, `final_audio` (`music` / `clips` / `none`), `final_fit`
+(`pad` / `stretch` / `crop`), `final_fps` (0 = the fastest rate among the clips), `final_crf`.
+
 **Music & shots** — `analyze_music`, `snap_cuts_to_beats`, `audio_clip_padding`.
 
 **Prompting** — `max_subjects`, `negative_prompt_base`, `include_dialogue`, `h3_style_directive`.
@@ -160,7 +184,7 @@ they are never written into the outputs or into `analysis_json`.
 
 ## Outputs
 
-Fourteen of the sixteen outputs are **lists** (everything except `transcript` and `analysis_json`). Wire them into any node that iterates a list, or index them.
+Fourteen of the seventeen outputs are **lists** (everything except `transcript` and `analysis_json`). Wire them into any node that iterates a list, or index them.
 
 | # | Output | Aligned with | Contents |
 |---|---|---|---|
@@ -180,6 +204,7 @@ Fourteen of the sixteen outputs are **lists** (everything except `transcript` an
 | 14 | `images` | shots | **IMAGE** — rendered start frames (empty while `image_provider = none`) |
 | 15 | `subject_images` | subjects | **IMAGE** — rendered reference sheets (`render_subject_sheets`) |
 | 16 | `videos` | shots | **VIDEO** — rendered clips, also written to `ComfyUI/output/music2prompts/` |
+| 17 | `final_video` | — | **VIDEO** — every clip cut together in shot order, with the music |
 
 ### Wiring examples
 
