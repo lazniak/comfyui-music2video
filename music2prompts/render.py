@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .providers import OPENROUTER_URL, ProviderError, resolve_key
-from .util import PREFIX, log, warn
+from .util import PREFIX, clamp_seed, log, warn
 
 FAL_QUEUE_URL = "https://queue.fal.run"
 FAL_MODEL_INDEX = "https://fal.ai/api/models"
@@ -56,9 +56,6 @@ FALLBACK_OPENROUTER_VIDEO = [
 # fal video endpoints that take subject references rather than a first frame
 REFERENCE_HINTS = ("reference-to-video", "ref2v", "/reference")
 
-# Image and video providers take a 32-bit seed. ComfyUI's seed widget goes up to
-# 2**60, which OpenRouter rejects outright ("seed must be -1 or in [0,2147483647]").
-MAX_SEED = 2**31 - 1
 
 class RenderError(RuntimeError):
     pass
@@ -101,16 +98,6 @@ def aspect_to_size(aspect_ratio: str, base: int = 1024) -> tuple[int, int]:
     width, height = base * ratio**0.5, base / ratio**0.5
     snap = lambda value: max(256, int(round(value / 32.0)) * 32)  # noqa: E731
     return snap(width), snap(height)
-
-
-def clamp_seed(seed: int | None) -> int | None:
-    """Fold ComfyUI's 64-bit seed into the 32-bit range every media provider accepts."""
-    if seed is None:
-        return None
-    value = int(seed)
-    if value < 0:
-        value = -value
-    return value % (MAX_SEED + 1)
 
 
 def data_uri(payload: bytes, media_type: str = "image/png") -> str:

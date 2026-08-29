@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .util import PREFIX, extract_json, log, warn
+from .util import PREFIX, clamp_seed, extract_json, log, warn
 
 DEFAULT_URL = "http://127.0.0.1:1234"
 FALLBACK_MODELS = ["google/gemma-4-e4b"]
@@ -336,7 +336,7 @@ class LMStudioClient:
             "stream": False,
         }
         if seed is not None:
-            base_payload["seed"] = int(seed)
+            base_payload["seed"] = clamp_seed(seed)
         # Reasoning models (gemma-4, qwen3, ...) otherwise spend the whole token budget
         # on reasoning_content and return an empty message.
         if reasoning_effort and reasoning_effort.lower() not in {"", "default", "auto"}:

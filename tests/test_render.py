@@ -136,6 +136,12 @@ def test_missing_fal_key_is_a_clear_error(monkeypatch):
 # --------------------------------------------------------------------------- fal payloads
 
 
+def test_media_seeds_are_clamped_too(fal):
+    seen = record(fal, {"images": [{"url": data_uri(b"png")}]})
+    fal.image("fal-ai/flux/dev", ImageRequest(prompt="x", seed=981447705429804))
+    assert 0 <= seen["payload"]["seed"] <= 2**31 - 1
+
+
 def test_fal_image_payload(fal):
     seen = record(fal, {"images": [{"url": data_uri(b"png")}]})
     payload = ImageRequest(prompt="a night street", negative="daylight", aspect_ratio="9:16", seed=11)

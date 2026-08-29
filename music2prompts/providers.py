@@ -20,7 +20,7 @@ from typing import Any
 from .lmstudio import DEFAULT_URL as LMSTUDIO_URL
 from .lmstudio import FALLBACK_MODELS as LMSTUDIO_FALLBACK
 from .lmstudio import LMStudioClient
-from .util import PREFIX, extract_json, log, warn
+from .util import PREFIX, clamp_seed, extract_json, log, warn
 
 LLM_PROVIDERS = ["lmstudio", "openrouter", "openai", "anthropic"]
 
@@ -248,7 +248,7 @@ class OpenAICompatClient(_CloudClient):
         if temperature is not None:
             payload["temperature"] = float(temperature)
         if seed is not None:
-            payload["seed"] = int(seed)
+            payload["seed"] = clamp_seed(seed)
         effort = (reasoning_effort or "").lower()
         if effort in {"low", "medium", "high"}:
             payload["reasoning_effort"] = effort

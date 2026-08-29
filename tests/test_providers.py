@@ -128,6 +128,14 @@ def openai_reply(text: str = '{"title": "ok"}'):
     return {"choices": [{"message": {"content": text}, "finish_reason": "stop"}]}
 
 
+def test_a_comfyui_seed_is_folded_into_the_32_bit_range():
+    """Gemini through OpenRouter rejects anything wider: "(TYPE_INT32)"."""
+    client = OpenAICompatClient("https://openrouter.ai/api/v1", "k", 60, 0, False, name="openrouter")
+    seen = capture(client, openai_reply())
+    client.chat_json("google/gemini-3.7-flash", "sys", "user", seed=981447705429804)
+    assert 0 <= seen["payload"]["seed"] <= 2**31 - 1
+
+
 def test_openai_payload_uses_strict_json_schema():
     client = OpenAICompatClient("https://api.openai.com/v1", "k", 60, 0, False, name="openai")
     seen = capture(client, openai_reply())

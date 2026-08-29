@@ -33,6 +33,20 @@ def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+# ComfyUI's seed widget goes up to 2**60. Providers take a signed 32-bit seed and
+# reject anything larger outright - Gemini through OpenRouter answers
+# "Invalid value at 'generation_config.seed' (TYPE_INT32)", fal and the OpenRouter
+# media APIs answer "seed must be -1 or in [0,2147483647]".
+MAX_SEED = 2**31 - 1
+
+
+def clamp_seed(seed: int | None) -> int | None:
+    """Fold a ComfyUI seed into the 32-bit range every provider accepts."""
+    if seed is None:
+        return None
+    return abs(int(seed)) % (MAX_SEED + 1)
+
+
 def chunked(items: Sequence[Any], size: int) -> Iterator[list[Any]]:
     """Yield consecutive chunks of at most ``size`` elements."""
     size = max(1, int(size))
