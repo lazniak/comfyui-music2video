@@ -582,6 +582,8 @@ class Music2PromptsLM(io.ComfyNode):
         local_llm = provider == "lmstudio"
         image_model = fal_image_model if image_provider == "fal" else openrouter_image_model
         video_model = fal_video_model if video_provider == "fal" else openrouter_video_model
+        if wants_video and video_provider == "fal":
+            cls._check_video_inputs(video_model, video_prompt_source, wants_images, render_subject_sheets)
         log(f"LLM: {provider}/{model_key}")
 
         # ---------------------------------------------------------- transcription
@@ -969,6 +971,33 @@ class Music2PromptsLM(io.ComfyNode):
                 "and choose 'Refresh model lists'."
             )
         return model, keys.get(provider, "")
+
+    @staticmethod
+    def _check_video_inputs(
+        video_model: str,
+        video_prompt_source: str,
+        wants_images: bool,
+        render_subject_sheets: bool,
+    ) -> None:
+        """Stop an image-to-video model that has no image coming, before anything is paid for.
+
+        fal endpoints differ: MiniMax H3 will animate from text alone, Wan and Kling
+        will not. Asked here, the run fails in a second instead of after the LLM and
+        a full set of images have already been billed.
+        """
+        needs = render_module.fal_video_needs_image(video_model)
+        if not needs:
+            return
+        use_reference = (video_prompt_source or "i2va").lower() == "ref2va"
+        supplied = (wants_images and render_subject_sheets) if use_reference else wants_images
+        if supplied:
+            return
+        source = "subject sheets" if use_reference else "a first frame"
+        raise ValueError(
+            f"{PREFIX} '{video_model}' requires {needs}, so every clip needs {source}. "
+            f"Set image_provider (and {'render_subject_sheets' if use_reference else 'keep video_prompt_source on i2va'}), "
+            "or pick a text-to-video model such as minimax/h3/text-to-video."
+        )
 
     @classmethod
     def validate_inputs(  # noqa: PLR0913 - one argument per model dropdown, by design

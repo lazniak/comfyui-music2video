@@ -12,9 +12,13 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from music2prompts import render as render_module  # noqa: E402
 from music2prompts.providers import KEY_ENV  # noqa: E402
 from music2prompts.render import (  # noqa: E402
     FalClient,
+    _FalRejected,
+    build_fal_image_payload,
+    build_fal_video_payload,
     ImageRequest,
     OpenRouterMediaClient,
     RenderError,
@@ -28,6 +32,14 @@ from music2prompts.render import (  # noqa: E402
 )
 
 PIXEL = data_uri(b"\x89PNG\r\n")
+
+
+@pytest.fixture(autouse=True)
+def schemas(monkeypatch):
+    """No test reaches fal for a schema; a test says what its endpoint declares."""
+    known: dict[str, dict] = {}
+    monkeypatch.setattr(render_module, "fal_schema", lambda model, timeout=6.0: known.get(model, {}))
+    return known
 
 
 @pytest.fixture
@@ -46,8 +58,8 @@ def record(client, result):
     """Capture what ``run`` would submit instead of talking to fal."""
     seen: dict = {}
 
-    def fake_run(model, payload, optional_keys=()):
-        seen.update(model=model, payload=payload, optional=optional_keys)
+    def fake_run(model, payload, optional_keys=(), spare=None):
+        seen.update(model=model, payload=payload, optional=optional_keys, spare=spare)
         return result
 
     client.run = fake_run  # type: ignore[assignment]
@@ -58,7 +70,7 @@ class FakeResponse:
     def __init__(self, status_code: int, body: dict | bytes) -> None:
         self.status_code = status_code
         self._body = body
-        self.text = str(body)[:200]
+        self.text = body.decode("utf-8", "replace") if isinstance(body, bytes) else json.dumps(body)
         self.content = body if isinstance(body, bytes) else json.dumps(body).encode()
 
     def json(self):
@@ -213,6 +225,126 @@ def test_fal_reports_a_failed_job(fal, monkeypatch):
     )
     with pytest.raises(RenderError, match="FAILED"):
         fal.run("fal-ai/flux/dev", {"prompt": "x"})
+
+
+# --------------------------------------------------------------------------- fal schemas
+
+WAN = {
+    "required": ["start_image_url"],
+    "properties": {
+        "prompt": {"type": "string"},
+        "start_image_url": {"type": "string"},
+        "end_image_url": {"type": "string"},
+        "duration": {"type": "integer", "minimum": 2, "maximum": 10},
+        "resolution": {"enum": ["480p", "720p", "1080p"]},
+        "aspect_ratio": {"enum": ["adaptive", "16:9", "9:16"]},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 999},
+    },
+}
+KLING = {
+    "required": ["prompt", "image_url"],
+    "properties": {
+        "prompt": {"type": "string"},
+        "image_url": {"type": "string"},
+        "duration": {"enum": ["5", "10"]},
+    },
+}
+BANANA = {
+    "required": ["prompt"],
+    "properties": {
+        "prompt": {"type": "string"},
+        "aspect_ratio": {"enum": ["1:1", "16:9", "9:16"]},
+        "num_images": {"type": "integer"},
+        "output_format": {"enum": ["jpeg", "png"]},
+        "image_urls": {"type": "array"},
+    },
+}
+
+
+def test_the_image_field_comes_from_the_endpoint_not_a_guess(schemas, fal):
+    """The bug this fixes: Wan wants start_image_url, so image_url was silently missing."""
+    schemas["alibaba/wan-3.0-prime/image-to-video"] = WAN
+    seen = record(fal, {"video": {"url": data_uri(b"mp4", "video/mp4")}})
+    request = VideoRequest(prompt="push in", seconds=6.4, first_frame=PIXEL, seed=5)
+    fal.video("alibaba/wan-3.0-prime/image-to-video", request)
+    assert seen["payload"]["start_image_url"] == PIXEL
+    assert "image_url" not in seen["payload"]
+
+
+def test_fields_the_endpoint_does_not_declare_are_never_sent(schemas):
+    payload, _ = build_fal_image_payload(
+        "fal-ai/nano-banana-pro", ImageRequest(prompt="x", negative="blurry", seed=3), BANANA
+    )
+    assert set(payload) <= set(BANANA["properties"])
+    assert "enable_safety_checker" not in payload and "negative_prompt" not in payload
+    assert payload["aspect_ratio"] == "16:9", "an aspect enum replaces the image_size object"
+
+
+def test_a_model_that_must_have_an_image_says_so_instead_of_failing_at_fal():
+    with pytest.raises(RenderError, match="start_image_url"):
+        build_fal_video_payload("alibaba/wan-3.0-prime/image-to-video", VideoRequest(prompt="x"), WAN)
+
+
+def test_duration_is_clamped_and_matched_to_what_the_endpoint_allows():
+    long_shot = VideoRequest(prompt="x", seconds=14.0, first_frame=PIXEL)
+    assert build_fal_video_payload("m", long_shot, WAN)[0]["duration"] == 10
+    assert build_fal_video_payload("m", long_shot, KLING)[0]["duration"] == "10", "enum durations are strings"
+    short = VideoRequest(prompt="x", seconds=6.0, first_frame=PIXEL)
+    assert build_fal_video_payload("m", short, KLING)[0]["duration"] == "5", "nearest allowed value"
+
+
+def test_the_seed_respects_the_endpoints_own_range():
+    payload, _ = build_fal_video_payload("m", VideoRequest(prompt="x", first_frame=PIXEL, seed=12345), WAN)
+    assert 0 <= payload["seed"] <= 999
+
+
+def test_an_unreadable_schema_still_produces_the_old_payload(schemas, fal):
+    """fal aliases (bytedance-seed/...) have no schema document; those runs must still work."""
+    seen = record(fal, {"images": [{"url": data_uri(b"png")}]})
+    fal.image("bytedance-seed/seedream-5-0-lite", ImageRequest(prompt="x", negative="blurry"))
+    assert seen["payload"]["negative_prompt"] == "blurry"
+    assert "image_size" in seen["payload"]
+
+
+def test_a_missing_field_reported_only_when_the_job_runs_is_retried(fal, monkeypatch):
+    """fal validates some endpoints late: the 422 arrives from the result URL, not the POST."""
+    calls: list[dict] = []
+
+    def post(url, headers=None, data=None, timeout=None):
+        calls.append(json.loads(data))
+        return FakeResponse(200, {"status_url": "https://queue/status", "response_url": "https://queue/response"})
+
+    def get(url, headers=None, timeout=None):
+        if url.endswith("status"):
+            return FakeResponse(200, {"status": "COMPLETED"})
+        if "start_image_url" not in calls[-1]:
+            return FakeResponse(
+                422, {"detail": [{"type": "missing", "loc": ["body", "start_image_url"], "msg": "Field required"}]}
+            )
+        return FakeResponse(200, {"video": {"url": data_uri(b"mp4", "video/mp4")}})
+
+    fake_requests(monkeypatch, post=post, get=get)
+    request = VideoRequest(prompt="x", first_frame=PIXEL, seconds=6)
+    assert fal.video("alibaba/wan-3.0-prime/image-to-video", request) == b"mp4"
+    assert len(calls) == 2 and calls[1]["start_image_url"] == PIXEL
+
+
+def test_a_refusal_we_cannot_repair_reports_what_fal_said(fal, monkeypatch):
+    fake_requests(
+        monkeypatch,
+        post=lambda *a, **k: FakeResponse(422, {"detail": [{"type": "value_error", "msg": "prompt too long"}]}),
+        get=lambda *a, **k: FakeResponse(200, {}),
+    )
+    with pytest.raises(RenderError, match="prompt too long"):
+        fal.run("fal-ai/flux/dev", {"prompt": "x"})
+
+
+def test_missing_fields_are_read_out_of_the_error_body():
+    body = json.dumps(
+        {"detail": [{"type": "missing", "loc": ["body", "image_url"]}, {"type": "value_error", "loc": ["body", "x"]}]}
+    )
+    assert _FalRejected("result", 422, body).missing == ["image_url"]
+    assert _FalRejected("submit", 400, "not json").missing == []
 
 
 # --------------------------------------------------------------------------- OpenRouter payloads
