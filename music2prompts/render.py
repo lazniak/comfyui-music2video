@@ -29,6 +29,8 @@ FAL_SCHEMA_URL = "https://fal.ai/api/openapi/queue/openapi.json"
 
 MEDIA_PROVIDERS = ["none", "fal", "openrouter"]
 
+# Text-to-image endpoints: these render the first image of a run, and nothing else -
+# not one of them declares an input for a reference image.
 FALLBACK_FAL_IMAGE = [
     "fal-ai/flux/dev",
     "fal-ai/flux-2-pro",
@@ -36,12 +38,21 @@ FALLBACK_FAL_IMAGE = [
     "fal-ai/z-image/turbo",
     "fal-ai/nano-banana-pro",
 ]
+# Edit endpoints: the only fal image models that can be handed an identity to keep.
+# They *require* their image field, so they can never render the first frame of a run.
+FALLBACK_FAL_IMAGE_EDIT = [
+    "fal-ai/nano-banana-pro/edit",
+    "fal-ai/flux-2-pro/edit",
+    "fal-ai/qwen-image-edit-2511",
+    "bytedance/seedream/v5/pro/edit",
+    "fal-ai/flux-pro/kontext/multi",
+]
 FALLBACK_FAL_VIDEO = [
     "minimax/h3/image-to-video",
     "minimax/h3/reference-to-video",
     "minimax/h3/text-to-video",
     "fal-ai/kling-video/v2.5-turbo/pro/image-to-video",
-    "fal-ai/wan/v2.7/image-to-video",
+    "fal-ai/wan/v2.7/image-to-video",  # the one default that takes driving audio
 ]
 FALLBACK_OPENROUTER_IMAGE = [
     "google/gemini-3.1-flash-image",
@@ -66,6 +77,11 @@ FIRST_FRAME_FIELDS = (
 REFERENCE_FIELDS = (
     "reference_image_urls", "image_urls", "reference_images", "subject_reference_urls", "input_image_urls",
 )
+# Fields that take a *driving* audio track. `audio` is deliberately absent: on
+# alibaba/wan-3.0-prime it is a boolean meaning "include generated audio", which is the
+# opposite of handing the model a vocal to follow.
+AUDIO_URL_FIELDS = ("audio_url", "audio", "speech_url", "voice_url")
+AUDIO_LIST_FIELDS = ("reference_audio_urls", "audio_urls")
 
 
 class RenderError(RuntimeError):
@@ -93,6 +109,9 @@ class VideoRequest:
     seed: int | None = None
     first_frame: str = ""  # data: URI
     references: list[str] = field(default_factory=list)  # data: URIs
+    #: The shot's own audio as a data: URI. Only sent to endpoints that declare an input
+    #: for a driving audio track; on the rest there is nothing to send it to.
+    audio: str = ""
     label: str = ""
 
 
@@ -264,6 +283,42 @@ def _fit_enum(value: Any, options: list) -> Any:
 
 def _first_field(properties: dict, candidates: tuple[str, ...]) -> str:
     return next((name for name in candidates if name in properties), "")
+
+
+def fal_image_reference_field(model: str) -> str:
+    """The field this image endpoint takes reference images in, or "" if it takes none.
+
+    Most fal image models are pure text-to-image and declare no image input at all: they
+    physically cannot be told to keep a face or a look. Asking the schema is the only way
+    to know before the money is spent.
+    """
+    properties = fal_schema(model).get("properties") or {}
+    if not properties:
+        return ""
+    return _first_field(properties, REFERENCE_FIELDS) or _first_field(properties, FIRST_FRAME_FIELDS)
+
+
+def fal_image_needs_image(model: str) -> str:
+    """Name of the image field this endpoint *requires*, or "" when text alone is enough."""
+    required = fal_schema(model).get("required") or []
+    return next((name for name in required if name in REFERENCE_FIELDS + FIRST_FRAME_FIELDS), "")
+
+
+def fal_audio_field(model: str) -> str:
+    """The field this video endpoint takes a driving audio track in, or "".
+
+    Only a real audio *input* counts. A boolean named ``audio`` means "generate a
+    soundtrack" and is not one, so the schema's type is checked too.
+    """
+    properties = fal_schema(model).get("properties") or {}
+    for name in AUDIO_LIST_FIELDS + AUDIO_URL_FIELDS:
+        prop = properties.get(name)
+        if prop is None:
+            continue
+        if any(branch.get("type") == "boolean" for branch in _branches(prop)):
+            continue
+        return name
+    return ""
 
 
 def fal_video_needs_image(model: str) -> str:
@@ -532,6 +587,15 @@ def build_fal_video_payload(
         else:
             offer("duration", seconds)
 
+    if request.audio:
+        audio_field = _first_field(properties, AUDIO_LIST_FIELDS + AUDIO_URL_FIELDS) if known else ""
+        if not known:
+            audio_field = "audio_url"
+        prop = properties.get(audio_field) if known else None
+        if audio_field and not any(branch.get("type") == "boolean" for branch in _branches(prop)):
+            wanted_list = audio_field in AUDIO_LIST_FIELDS
+            offer(audio_field, [request.audio] if wanted_list else request.audio)
+
     if ("aspect_ratio" in properties or not known) and not payload.get(frame_field):
         offer("aspect_ratio", _fit_enum(request.aspect_ratio, _enum_of(properties.get("aspect_ratio"))))
     if request.seed is not None:
@@ -539,6 +603,8 @@ def build_fal_video_payload(
 
     order = ("aspect_ratio", "seed", "duration")
     optional.sort(key=lambda name: order.index(name) if name in order else len(order))
+    # the audio is the point of the request when it is there; drop it last
+    optional = [name for name in optional if name not in AUDIO_LIST_FIELDS + AUDIO_URL_FIELDS]
     return payload, tuple(optional)
 
 
@@ -856,29 +922,42 @@ def save_images(
 # --------------------------------------------------------------------------- model probing
 
 
-def _fal_index(categories: tuple[str, ...], page_size: int = 60) -> list[str]:
+def _fal_index(categories: tuple[str, ...], pages: int = 2) -> list[str]:
+    """Model ids from fal's public index, most popular first.
+
+    The index ignores ``page_size`` and always answers with 40 items, so more than one
+    page has to be asked for - a single call would have hidden every edit endpoint past
+    the fortieth, which is most of them.
+    """
     import requests
 
     ids: list[str] = []
     for category in categories:
-        response = requests.get(
-            FAL_MODEL_INDEX, params={"categories": category, "page_size": page_size}, timeout=3.0
-        )
-        if response.status_code >= 400:
-            continue
-        for item in (response.json() or {}).get("items", []):
-            model_id = item.get("id")
-            if model_id and model_id not in ids:
-                ids.append(model_id)
+        for page in range(1, max(1, pages) + 1):
+            response = requests.get(
+                FAL_MODEL_INDEX, params={"categories": category, "page": page}, timeout=4.0
+            )
+            if response.status_code >= 400:
+                break
+            data = response.json() or {}
+            for item in data.get("items", []):
+                model_id = item.get("id")
+                if model_id and model_id not in ids:
+                    ids.append(model_id)
+            if page >= int(data.get("pages") or 1):
+                break
     return ids
 
 
 def probe_fal_images_raw() -> list[str]:
-    return _fal_index(("text-to-image",))
+    # image-to-image is where every edit endpoint lives, and an edit endpoint is the only
+    # kind that can be told which face to keep
+    return _fal_index(("text-to-image", "image-to-image"))
 
 
 def probe_fal_videos_raw() -> list[str]:
-    return _fal_index(("image-to-video", "text-to-video"))
+    # audio-to-video is the lip-sync / talking-head category
+    return _fal_index(("image-to-video", "text-to-video", "audio-to-video"))
 
 
 def _openrouter_media_models(kind: str) -> list[str]:

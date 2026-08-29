@@ -29,17 +29,17 @@ const RULES = [
   ["llm_provider", { lm_auto_download: "lmstudio", lm_auto_load: "lmstudio", lm_context_length: "lmstudio" }],
   ["llm_provider", { lm_unload_after: "lmstudio", free_lmstudio_vram: "lmstudio" }],
   ["llm_provider", { openrouter_api_key: "openrouter", openai_api_key: "openai", anthropic_api_key: "anthropic" }],
-  ["image_provider", { fal_image_model: "fal", openrouter_image_model: "openrouter" }],
+  ["image_provider", { fal_image_model: "fal", fal_image_edit_model: "fal", openrouter_image_model: "openrouter" }],
   ["video_provider", { fal_video_model: "fal", openrouter_video_model: "openrouter" }],
 ];
 
 // only meaningful once something is actually rendered
 const RENDER_ONLY = [
   "render_concurrency", "video_prompt_source", "render_subject_sheets", "save_rendered_video", "render_timeout",
-  "live_preview", "save_rendered_images",
+  "live_preview", "save_rendered_images", "style_anchor",
 ];
 // only meaningful once clips are rendered
-const VIDEO_ONLY = ["concat_video", "final_audio", "final_fit", "final_fps", "final_crf"];
+const VIDEO_ONLY = ["concat_video", "final_audio", "final_fit", "final_fps", "final_crf", "lipsync_audio"];
 
 // which cached list feeds which dropdown
 const LISTS = {
@@ -48,6 +48,7 @@ const LISTS = {
   openai_model: "openai_llm",
   anthropic_model: "anthropic_llm",
   fal_image_model: "fal_image",
+  fal_image_edit_model: "fal_image",
   openrouter_image_model: "openrouter_image",
   fal_video_model: "fal_video",
   openrouter_video_model: "openrouter_video",

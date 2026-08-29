@@ -60,6 +60,9 @@ RETENTION_STATES: tuple[str, ...] = (
     "reference",
 )
 
+#: The markers the guide allows for ``<Audio N>``; visible content uses RETENTION_STATES.
+AUDIO_STATES: tuple[str, ...] = ("fully_copy", "partially_copy", "reference", "weak_reference")
+
 DEFAULT_CAMERA = "The camera holds a static shot on the subject."
 
 #: Label-style motions rewritten as natural verb phrases, as the guide requires.
@@ -176,11 +179,24 @@ class Subject:
     description: str = ""
     identity_lock: str = ""
     retention: str = "fully_preserved"
+    #: 1-based position of the reference image that defines this subject, in the same
+    #: order the images are sent to the model. 0 means no image was supplied.
+    picture: int = 0
 
-    def definition(self, label: str) -> str:
+    def definition(self, label: str, picture_label: str = "") -> str:
+        """One ``subject_definitions`` line.
+
+        When a reference image defines this subject, the guide requires the image to be
+        cited *inside* the subject's definition rather than declared on its own - that
+        citation is the only thing that tells the model which picture is which subject.
+        Without it the images are supplied but never bound to anything.
+        """
         body = _lower_first(strip_field_labels(self.description) or self.name)
         lock = strip_field_labels(self.identity_lock)
-        text = _end_sentence(f"{label} is {body}", capitalize=False)
+        head = f"{label} is {body}"
+        if picture_label:
+            head = f"{head}, whose appearance comes from {picture_label}"
+        text = _end_sentence(head, capitalize=False)
         if lock:
             text = f"{text} Key features: {_end_sentence(lock, capitalize=False)}"
         return text
@@ -213,6 +229,10 @@ class H3Shot:
     subjects: list[Subject] = field(default_factory=list)
     cuts: list[Cut] = field(default_factory=list)
     extra_style_directive: str = ""
+    #: What the supplied audio clip is, when one is sent with the shot. Empty means no
+    #: audio reference, and no ``<Audio 1>`` label is written.
+    audio_reference: str = ""
+    audio_state: str = "fully_copy"
 
 
 # --------------------------------------------------------------------------- text helpers
@@ -408,14 +428,32 @@ def render_ref2va(shot: H3Shot, strict: bool = False) -> str:
     """Render a full-reference prompt; subjects are renumbered locally per shot."""
     subjects = [s for s in shot.subjects if (s.name or s.description)]
     labels = {id(subject): f"<Subject {position}>" for position, subject in enumerate(subjects, start=1)}
+    pictures = {
+        id(subject): f"<Picture {int(subject.picture)}>"
+        for subject in subjects
+        if int(subject.picture or 0) > 0
+    }
 
-    definitions = [subject.definition(labels[id(subject)]) for subject in subjects]
+    definitions = [
+        subject.definition(labels[id(subject)], pictures.get(id(subject), "")) for subject in subjects
+    ]
     if not definitions:
         definitions = [
             "<Subject 1> is the main on-screen subject described in the detailed description below."
         ]
         subjects = [Subject(name="main subject", description="the main on-screen subject")]
         labels = {id(subjects[0]): "<Subject 1>"}
+        pictures = {}
+
+    speaking = render_dialogue(shot.speakers)
+    audio_reference = _collapse(shot.audio_reference)
+    if audio_reference:
+        # The audio is what the performer must mouth, so it is bound to the first subject
+        # and to speaker S1 - the guide's way of saying "these lips follow this signal".
+        voice = f", and the voice-timbre reference for {labels[id(subjects[0])]} (S1)" if speaking else ""
+        definitions.append(
+            _end_sentence(f"<Audio 1> is {_lower_first(audio_reference)}{voice}", capitalize=False)
+        )
 
     label_list = ", ".join(labels[id(subject)] for subject in subjects)
     action_line = _collapse(shot.action) or _collapse(shot.opening) or "the referenced subjects stay in motion"
@@ -432,11 +470,23 @@ def render_ref2va(shot: H3Shot, strict: bool = False) -> str:
             f"{labels[id(subject)]} (appears in [Shot 1]): {state} - {detail} is retained."
         )
 
+    if audio_reference:
+        state = shot.audio_state if shot.audio_state in AUDIO_STATES else "fully_copy"
+        synced = (
+            f" {labels[id(subjects[0])]} mouths it in exact sync, frame by frame."
+            if speaking
+            else ""
+        )
+        retention_lines.append(
+            f"<Audio 1>: {state} - <Audio 1> is reused 1:1 as the target video's "
+            f"complete final audio track.{synced}"
+        )
+
     described = _sentences(
         _collapse(shot.opening) or f"{label_list} establish the opening composition",
         normalize_camera(shot.camera),
         shot.action,
-        render_dialogue(shot.speakers),
+        speaking,
         shot.diegetic_sound,
         render_on_screen_text(shot.on_screen_text),
     )
@@ -459,7 +509,10 @@ def render_ref2va(shot: H3Shot, strict: bool = False) -> str:
         + "\n\nnon_diegetic_music:\n"
         + _music(shot)
     )
-    return _resolve_labels(text, defined={label for label in labels.values()}, strict=strict)
+    defined = set(labels.values()) | set(pictures.values())
+    if audio_reference:
+        defined.add("<Audio 1>")
+    return _resolve_labels(text, defined=defined, strict=strict)
 
 
 def _resolve_labels(text: str, defined: set[str], strict: bool) -> str:

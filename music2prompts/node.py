@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from comfy_api.latest import io
 
 from . import asr as asr_module
+from . import audio_io
 from . import model_cache
 from . import music_dsp
 from . import preview as preview_module
@@ -184,7 +185,21 @@ class Music2PromptsLM(io.ComfyNode):
                 io.Combo.Input(
                     "fal_image_model",
                     options=options["fal_image"],
-                    tooltip="Image model used when image_provider = fal.",
+                    tooltip=(
+                        "fal image model that draws from text alone: the subject sheets, and the "
+                        "shots when there is nothing to keep consistent with."
+                    ),
+                ),
+                io.Combo.Input(
+                    "fal_image_edit_model",
+                    options=options["fal_image"],
+                    tooltip=(
+                        "fal image model used for the shots once there are references to hold on to "
+                        "(the subject sheets, your reference_images, the style anchor). This must be "
+                        "an EDIT model - one whose id ends in /edit or /image-to-image. A plain "
+                        "text-to-image model has no field for a reference image, so the identity is "
+                        "silently thrown away and every shot comes back a different person."
+                    ),
                 ),
                 io.Combo.Input(
                     "openrouter_image_model",
@@ -319,6 +334,25 @@ class Music2PromptsLM(io.ComfyNode):
                     tooltip=(
                         "Show each image and clip in the node as soon as it is rendered, "
                         "instead of waiting for the whole batch."
+                    ),
+                ),
+                io.Boolean.Input(
+                    "lipsync_audio", default=True, advanced=True,
+                    tooltip=(
+                        "Send each shot's own slice of the track to the video model, so the "
+                        "performance follows the vocal. Only some endpoints have an input for a "
+                        "driving audio track - fal-ai/wan/v2.7/image-to-video and the talking-head "
+                        "models take one, minimax/h3/reference-to-video takes it as a reference, "
+                        "and most image-to-video models take none at all."
+                    ),
+                ),
+                io.Boolean.Input(
+                    "style_anchor", default=True, advanced=True,
+                    tooltip=(
+                        "Render shot 1 on its own first, then hand it to every later shot as a "
+                        "reference. This is what holds the grade, the grain and the wardrobe "
+                        "together. Costs one serialised render, and needs a model that accepts "
+                        "references."
                     ),
                 ),
                 io.Boolean.Input(
@@ -516,6 +550,7 @@ class Music2PromptsLM(io.ComfyNode):
         llm_provider: str = "lmstudio",
         image_provider: str = "none",
         fal_image_model: str = "",
+        fal_image_edit_model: str = "",
         openrouter_image_model: str = "",
         video_provider: str = "none",
         fal_video_model: str = "",
@@ -531,6 +566,8 @@ class Music2PromptsLM(io.ComfyNode):
         video_prompt_source: str = "i2va",
         render_subject_sheets: bool = False,
         live_preview: bool = True,
+        lipsync_audio: bool = True,
+        style_anchor: bool = True,
         save_rendered_images: bool = True,
         save_rendered_video: bool = True,
         concat_video: bool = True,
@@ -588,7 +625,9 @@ class Music2PromptsLM(io.ComfyNode):
             enabled=live_preview and (wants_images or wants_video),
         )
         feed.reset()
-        progress = _ProgressReporter(BASE_STAGES + int(wants_images) + int(wants_video), verbose)
+        stages = BASE_STAGES + int(wants_images) + int(wants_video)
+        stages += int(wants_images and render_subject_sheets)  # the sheets are their own pass
+        progress = _ProgressReporter(stages, verbose)
 
         samples, sample_rate = audio_to_mono(audio)
         duration = len(samples) / float(sample_rate)
@@ -759,12 +798,14 @@ class Music2PromptsLM(io.ComfyNode):
         durations: list[float] = []
         audio_clips: list[dict] = []
         shots_debug: list[dict] = []
+        h3_shots: list[H3Shot] = []  # kept so ref2va can be rewritten once the references exist
 
         for slot in slots:
             item = content.get(slot.index) or {}
             shot = cls._build_shot(
                 slot, item, subjects, art, lyrics_language, h3_style_directive, include_dialogue
             )
+            h3_shots.append(shot)
             start_frames.append(image_prompts.get(slot.index) or cls._fallback_image_prompt(shot, art, aspect_ratio))
             i2va.append(render_i2va(shot))
             ref2va.append(render_ref2va(shot))
@@ -806,47 +847,20 @@ class Music2PromptsLM(io.ComfyNode):
         final_video = None
         final_info: dict = {}
 
+        sheet_of: dict[str, int] = {}  # subject name -> its 1-based position in the sent references
+        identity_uris: list[str] = list(reference_uris)
         if wants_images:
-            progress.step(f"rendering {len(start_frames)} start frame(s) with {image_provider}")
             image_client = render_module.make_media_client(
                 image_provider, fal_api_key if image_provider == "fal" else openrouter_api_key,
                 timeout=render_timeout, verbose=verbose,
             )
-            image_errors: list[Exception] = []
-            image_payloads = render_module.render_images(
-                image_client,
-                image_model,
-                [
-                    ImageRequest(
-                        prompt=prompt,
-                        negative=negatives[index],
-                        aspect_ratio=aspect_ratio,
-                        seed=(int(seed) + index) if seed else None,
-                        references=list(reference_uris),
-                        label=f"shot {index + 1}",
-                    )
-                    for index, prompt in enumerate(start_frames)
-                ],
-                render_concurrency,
-                image_errors,
-                on_done=lambda index, data, total=len(start_frames): feed.publish(
-                    "image", index, data, label=f"shot {index + 1}", total=total
-                ),
-            )
-            if not any(image_payloads):
-                raise RuntimeError(
-                    f"{PREFIX} every image render failed on {image_provider}/{image_model}. "
-                    f"First error: {image_errors[0] if image_errors else 'unknown'}"
-                )
-            # a failed shot keeps its slot as a black frame, so `images` stays aligned
-            # with the shot list instead of silently shifting every later shot
-            images_out = [
-                render_module.image_bytes_to_tensor(data)
-                if data
-                else render_module.placeholder_image(aspect_ratio)
-                for data in image_payloads
-            ]
+
+            # The subject sheets go FIRST and then become references for every shot: that
+            # is the whole mechanism behind keeping one face and one look across a film.
+            # They are rendered by the plain text-to-image model, because an edit model
+            # cannot draw a subject that does not exist yet.
             if render_subject_sheets and subject_prompts:
+                progress.step(f"rendering {len(subject_prompts)} subject sheet(s) with {image_provider}")
                 subject_payloads = render_module.render_images(
                     image_client,
                     image_model,
@@ -864,7 +878,7 @@ class Music2PromptsLM(io.ComfyNode):
                     render_concurrency,
                     on_done=lambda index, data, total=len(subject_prompts): feed.publish(
                         "image",
-                        len(start_frames) + index,
+                        1000 + index,
                         data,
                         label=subject_names[index] if index < len(subject_names) else f"subject {index + 1}",
                         total=total,
@@ -873,6 +887,75 @@ class Music2PromptsLM(io.ComfyNode):
                 subject_images_out = [
                     render_module.image_bytes_to_tensor(data) for data in subject_payloads if data
                 ]
+                for index, payload in enumerate(subject_payloads):
+                    if not payload:
+                        continue
+                    identity_uris.append(render_module.data_uri(payload))
+                    if index < len(subject_names):
+                        sheet_of[subject_names[index]] = len(identity_uris)
+                _interrupt_check()
+
+            frame_model, frame_client = cls._frame_model(
+                image_provider, image_model, fal_image_edit_model, bool(identity_uris), image_client
+            )
+            progress.step(f"rendering {len(start_frames)} start frame(s) with {image_provider}")
+
+            def frame_request(index: int, prompt: str, extra: list[str]) -> ImageRequest:
+                return ImageRequest(
+                    prompt=prompt,
+                    negative=negatives[index],
+                    aspect_ratio=aspect_ratio,
+                    seed=(int(seed) + index) if seed else None,
+                    references=identity_uris + extra,
+                    label=f"shot {index + 1}",
+                )
+
+            def publish_frame(index: int, data: bytes, total: int = len(start_frames)) -> None:
+                feed.publish("image", index, data, label=f"shot {index + 1}", total=total)
+
+            image_errors: list[Exception] = []
+            anchor: list[str] = []
+            first: list[bytes | None] = []
+            wants_anchor = style_anchor and bool(identity_uris) and len(start_frames) > 1
+            if wants_anchor:
+                # Shot 1 alone first; every later shot then also sees it, which is what
+                # holds the grade, the grain and the wardrobe together across the film.
+                first = render_module.render_images(
+                    frame_client, frame_model, [frame_request(0, start_frames[0], [])],
+                    1, image_errors, on_done=publish_frame,
+                )
+                if first and first[0]:
+                    anchor = [render_module.data_uri(first[0])]
+                else:
+                    warn("the style anchor failed to render; the remaining shots go out without it")
+
+            rest = render_module.render_images(
+                frame_client,
+                frame_model,
+                [
+                    frame_request(index, prompt, anchor)
+                    for index, prompt in enumerate(start_frames)
+                    if not (wants_anchor and index == 0)
+                ],
+                render_concurrency,
+                image_errors,
+                on_done=lambda offset, data: publish_frame(offset + (1 if wants_anchor else 0), data),
+            )
+            image_payloads = (first + rest) if wants_anchor else rest
+
+            if not any(image_payloads):
+                raise RuntimeError(
+                    f"{PREFIX} every image render failed on {image_provider}/{frame_model}. "
+                    f"First error: {image_errors[0] if image_errors else 'unknown'}"
+                )
+            # a failed shot keeps its slot as a black frame, so `images` stays aligned
+            # with the shot list instead of silently shifting every later shot
+            images_out = [
+                render_module.image_bytes_to_tensor(data)
+                if data
+                else render_module.placeholder_image(aspect_ratio)
+                for data in image_payloads
+            ]
             if save_rendered_images:
                 written = render_module.save_images(image_payloads, filename_prefix, "frame", stamp)
                 written += render_module.save_images(
@@ -890,9 +973,31 @@ class Music2PromptsLM(io.ComfyNode):
                 timeout=render_timeout, verbose=verbose,
             )
             use_reference = (video_prompt_source or "i2va").lower() == "ref2va"
-            subject_uris = [
-                render_module.data_uri(data) for data in subject_payloads if data
-            ][:9]
+            audio_uris = cls._shot_audio(
+                audio_clips, video_provider, video_model, lipsync_audio
+            )
+            # H3 numbers its references by the order they are sent, and the prompt has to
+            # name them - <Picture 2> means "the second entry of this list". Send the same
+            # list the sheets were numbered against, so the labels point at the right face.
+            subject_uris = identity_uris[:9]
+            if use_reference and (sheet_of or any(audio_uris)):
+                for index, shot in enumerate(h3_shots):
+                    for subject in shot.subjects:
+                        subject.picture = sheet_of.get(subject.name, 0)
+                    if index < len(audio_uris) and audio_uris[index]:
+                        # naming the clip in the prompt is what ties it to the performance;
+                        # an audio reference nothing refers to is just a file
+                        shot.audio_reference = (
+                            "this shot's own slice of the original track, carrying the vocal"
+                        )
+                ref2va = [render_ref2va(shot) for shot in h3_shots]
+                bound = sum(1 for shot in h3_shots for s in shot.subjects if s.picture)
+                log(f"{bound} subject reference(s) bound to a <Picture> label in the ref2va prompts")
+            elif use_reference and not subject_uris:
+                warn(
+                    "ref2va was selected but there are no reference images to send: turn on "
+                    "render_subject_sheets (with an image_provider), or wire reference_images."
+                )
             video_requests: list[VideoRequest] = []
             for index, slot in enumerate(slots):
                 frame = image_payloads[index] if index < len(image_payloads) else None
@@ -904,6 +1009,7 @@ class Music2PromptsLM(io.ComfyNode):
                         seed=(int(seed) + index) if seed else None,
                         first_frame="" if use_reference else (render_module.data_uri(frame) if frame else ""),
                         references=subject_uris if use_reference else [],
+                        audio=audio_uris[index] if index < len(audio_uris) else "",
                         label=f"shot {slot.index}",
                     )
                 )
@@ -1042,6 +1148,93 @@ class Music2PromptsLM(io.ComfyNode):
                 "and choose 'Refresh model lists'."
             )
         return model, keys.get(provider, "")
+
+    @staticmethod
+    def _shot_audio(
+        clips: list[dict], provider: str, model: str, wanted: bool
+    ) -> list[str]:
+        """Each shot's own audio, encoded, but only where there is somewhere to send it.
+
+        Most image-to-video endpoints declare no audio input at all, and OpenRouter's video
+        API has none whatsoever - encoding for those would burn CPU and inflate the request
+        for nothing. Saying so out loud matters: a run that quietly drops the vocal looks
+        exactly like a model that ignored it.
+        """
+        empty = [""] * len(clips)
+        if not wanted or not clips:
+            return empty
+        if provider != "fal":
+            warn(
+                "OpenRouter's video API has no input for an audio track, so the shot audio "
+                "cannot be sent. Use fal with a model that takes driving audio - for example "
+                "fal-ai/wan/v2.7/image-to-video - if you want the performance to follow the vocal."
+            )
+            return empty
+        field = render_module.fal_audio_field(model)
+        if not field:
+            warn(
+                f"'{model}' declares no input for a driving audio track, so lipsync_audio does "
+                "nothing here. fal-ai/wan/v2.7/image-to-video takes one (audio_url), and "
+                "minimax/h3/reference-to-video takes one as a reference."
+            )
+            return empty
+        # H3 states 2-15 s per reference clip; the driving-audio endpoints allow more, so the
+        # tighter window is used for the list-shaped field only
+        longest = 15.0 if field in render_module.AUDIO_LIST_FIELDS else 30.0
+        uris: list[str] = []
+        for index, clip in enumerate(clips):
+            try:
+                seconds = audio_io.duration(clip)
+                if seconds < 2.0 or seconds > longest:
+                    warn(
+                        f"shot {index + 1} is {seconds:.1f}s, outside the 2-{longest:.0f}s window "
+                        f"{model} accepts for audio; that shot goes out without it"
+                    )
+                    uris.append("")
+                    continue
+                uris.append(audio_io.data_uri(clip, "mp3"))
+            except Exception as exc:
+                warn(f"could not encode the audio of shot {index + 1} ({exc})")
+                uris.append("")
+        sent = sum(1 for uri in uris if uri)
+        if sent:
+            log(f"sending {sent}/{len(clips)} shot audio clip(s) to {model} as '{field}'")
+        return uris
+
+    @staticmethod
+    def _frame_model(
+        provider: str,
+        image_model: str,
+        edit_model: str,
+        has_references: bool,
+        client,
+    ) -> tuple[str, object]:
+        """Which model draws the start frames, now that there is an identity to keep.
+
+        Most fal image models are text-to-image and declare no input for a reference
+        image at all, so handing them one is a silent no-op - which is exactly why every
+        shot used to come back as a different person. Only an edit endpoint can be told
+        what to keep, so once references exist the run switches to the edit model.
+        OpenRouter needs no switch: its image API takes ``input_references`` on almost
+        every model it lists.
+        """
+        if provider != "fal" or not has_references:
+            return image_model, client
+        chosen = (edit_model or "").strip()
+        if chosen and not chosen.startswith("("):
+            if not render_module.fal_image_reference_field(chosen):
+                warn(
+                    f"'{chosen}' declares no field for a reference image, so the subject sheets "
+                    "and the style anchor will be ignored. Pick a model whose id ends in /edit."
+                )
+            return chosen, client
+        if not render_module.fal_image_reference_field(image_model):
+            warn(
+                f"'{image_model}' is a text-to-image model: it has no field for a reference image, "
+                "so identity and style cannot carry between shots. Set fal_image_edit_model to an "
+                "edit model (for example fal-ai/nano-banana-pro/edit) to keep one face and one look."
+            )
+        return image_model, client
 
     @staticmethod
     def _check_video_inputs(

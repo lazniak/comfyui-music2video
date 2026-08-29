@@ -93,6 +93,48 @@ outright).
 
 * `image_provider` + `fal_image_model` / `openrouter_image_model` render the start frames. The result
   arrives on the `images` output, aligned with the shots.
+
+#### Keeping one face and one look
+
+Most fal image models are **text-to-image**: their API declares no field for a reference image at all,
+so handing them one does nothing. That is why independently rendered shots come back as different
+people in a different style - the model was never told what to keep. Three things address it:
+
+* **Subject sheets first.** With `render_subject_sheets` on, the sheets are rendered before the shots
+  and then travel *with* every shot as references.
+* **`fal_image_edit_model`.** Once there are references, the shots switch to this model. It must be an
+  edit endpoint (`fal-ai/nano-banana-pro/edit`, `fal-ai/flux-2-pro/edit`, `fal-ai/qwen-image-edit-2511`,
+  `bytedance/seedream/v5/pro/edit`, …) - the model list now includes fal's `image-to-image` category,
+  which is where they all live. Leave it and the node warns instead of silently dropping the identity.
+* **`style_anchor`** (on by default) renders shot 1 alone, then hands it to every later shot as another
+  reference. This is what holds the grade, the grain and the wardrobe together. It costs one
+  serialised render.
+
+OpenRouter needs none of this: its image API takes `input_references` on almost every model it lists,
+so the same references go out on the model you already picked.
+
+#### Lip sync
+
+`lipsync_audio` (on by default) sends each shot's own slice of the track to the video model - but only
+where the endpoint actually declares an input for a driving audio track, and it says so in the log when
+it does not:
+
+| endpoint | field | what the audio does |
+| --- | --- | --- |
+| `fal-ai/wan/v2.7/image-to-video` | `audio_url` | driving audio - the performance follows it |
+| `minimax/h3/reference-to-video` | `reference_audio_urls` | a multimodal reference, named `<Audio 1>` in the prompt |
+| talking-head models (`fal-ai/infinitalk`, `fal-ai/kling-video/ai-avatar/*`, …) | `audio_url` | drives the face |
+| `minimax/h3/image-to-video`, kling i2v, veo, hailuo | *none* | nothing to send it to |
+| `alibaba/wan-3.0-prime/image-to-video` | `audio` is a **boolean** | "include generated audio" - not an input |
+
+The clip is encoded as MP3 (~95 KB for six seconds against 1 MB as WAV) and travels inline. On the
+ref2va path the prompt is rewritten to name it: `<Audio 1> is this shot's own slice of the original
+track…` plus a `fully_copy` retention line, because a reference nothing in the prompt refers to is just
+an attached file. The same rewrite binds each subject to the image that defines it -
+`<Subject 1> … whose appearance comes from <Picture 1>` - which is what the MiniMax H3 format requires
+and what was missing before.
+
+OpenRouter's video API has no audio input of any kind; the node says so rather than pretending.
 * `video_provider` + `fal_video_model` / `openrouter_video_model` render the clips. With
   `video_prompt_source = i2va` the rendered start frame is sent as the first frame; with `ref2va` the
   rendered subject sheets are sent as references (turn on `render_subject_sheets`), which is what the
@@ -180,7 +222,8 @@ outright).
 
 **Cloud keys & rendering** — `openrouter_api_key`, `openai_api_key`, `anthropic_api_key`,
 `fal_api_key` (all empty = read from the environment), `video_prompt_source` (`i2va` / `ref2va`),
-`render_subject_sheets`, `live_preview`, `save_rendered_video`, `render_timeout`.
+`render_subject_sheets`, `style_anchor`, `lipsync_audio`, `live_preview`,
+`save_rendered_images`, `save_rendered_video`, `save_transcript`, `render_timeout`.
 
 **Final film** — `concat_video`, `final_audio` (`music` / `clips` / `none`), `final_fit`
 (`pad` / `stretch` / `crop`), `final_fps` (0 = the fastest rate among the clips), `final_crf`.
