@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from music2prompts.providers import (  # noqa: E402
+    KEY_ENV,
     AnthropicClient,
     OpenAICompatClient,
     ProviderError,
@@ -60,10 +61,32 @@ def test_explicit_key_beats_the_environment(monkeypatch):
     assert resolve_key("openai", "  ") == "from-env"
 
 
-def test_fal_key_falls_back_to_the_alternate_variable(monkeypatch):
-    monkeypatch.delenv("FAL_KEY", raising=False)
-    monkeypatch.setenv("FAL_API_KEY", "alt")
-    assert resolve_key("fal", "") == "alt"
+@pytest.mark.parametrize(
+    "provider,variable",
+    [
+        ("openrouter", "OPENROUTER_API_KEY"),
+        ("openrouter", "OPEN_ROUTER_API_KEY"),
+        ("openrouter", "OPENROUTER_KEY"),
+        ("openai", "OPENAI_API_KEY"),
+        ("openai", "OPEN_AI_API_KEY"),
+        ("anthropic", "ANTHROPIC_API_KEY"),
+        ("anthropic", "ANTHROPIC_AUTH_TOKEN"),
+        ("fal", "FAL_KEY"),
+        ("fal", "FAL_API_KEY"),
+        ("fal", "FAL_ADMIN_API_KEY"),
+    ],
+)
+def test_every_accepted_environment_variable_is_read(monkeypatch, provider, variable):
+    for name in KEY_ENV[provider]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(variable, "from-env")
+    assert resolve_key(provider, "") == "from-env"
+
+
+def test_the_first_variable_set_wins(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "primary")
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "secondary")
+    assert resolve_key("openrouter", "") == "primary"
 
 
 def test_missing_key_is_a_clear_error(monkeypatch):

@@ -28,11 +28,14 @@ OPENAI_URL = "https://api.openai.com/v1"
 ANTHROPIC_URL = "https://api.anthropic.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
 
+# Environment variables checked, in order, when a key widget is left empty.
+# Both spellings of the OpenRouter variable are accepted, and fal's admin key
+# works wherever FAL_KEY does.
 KEY_ENV = {
-    "openrouter": ("OPENROUTER_API_KEY", "OPENROUTER_KEY"),
-    "openai": ("OPENAI_API_KEY",),
+    "openrouter": ("OPENROUTER_API_KEY", "OPEN_ROUTER_API_KEY", "OPENROUTER_KEY"),
+    "openai": ("OPENAI_API_KEY", "OPEN_AI_API_KEY"),
     "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
-    "fal": ("FAL_KEY", "FAL_API_KEY"),
+    "fal": ("FAL_KEY", "FAL_API_KEY", "FAL_ADMIN_API_KEY"),
 }
 
 # Used when a provider cannot be reached while the schema is built.
