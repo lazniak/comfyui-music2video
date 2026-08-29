@@ -36,6 +36,7 @@ const RULES = [
 // only meaningful once something is actually rendered
 const RENDER_ONLY = [
   "render_concurrency", "video_prompt_source", "render_subject_sheets", "save_rendered_video", "render_timeout",
+  "live_preview",
 ];
 // only meaningful once clips are rendered
 const VIDEO_ONLY = ["concat_video", "final_audio", "final_fit", "final_fps", "final_crf"];

@@ -99,6 +99,14 @@ outright).
   MiniMax H3 `reference-to-video` endpoints expect.
 * `render_concurrency` decides how many images or clips are in flight at once. Failures do not stop
   the run: the failing entry is logged and skipped, everything else still comes back.
+* `live_preview` (on by default) shows each image and clip **inside the node the moment it is
+  rendered**, with arrows to page back and forth - a batch of twelve shots takes minutes, and this is
+  what lets you spot a bad prompt at shot 1 instead of paying for the rest. The gallery survives a
+  page reload and disappears again on the next run.
+* fal payloads are built from each endpoint's own published schema, so a model is sent the field
+  names it actually has (`start_image_url` for Wan, `image_url` for MiniMax H3) and only the options
+  it declares. Picking an image-to-video model with `image_provider = none` is refused before the run
+  starts, rather than after the LLM and the images have been billed.
 * Clips are written to `ComfyUI/output/music2prompts/` and returned on the `videos` output (the
   regular VIDEO type, so `SaveVideo` / `PreviewVideo` accept them).
 * `concat_video` (on by default) glues them into **one finished film** on the `final_video` output.
@@ -169,7 +177,7 @@ outright).
 
 **Cloud keys & rendering** — `openrouter_api_key`, `openai_api_key`, `anthropic_api_key`,
 `fal_api_key` (all empty = read from the environment), `video_prompt_source` (`i2va` / `ref2va`),
-`render_subject_sheets`, `save_rendered_video`, `render_timeout`.
+`render_subject_sheets`, `live_preview`, `save_rendered_video`, `render_timeout`.
 
 **Final film** — `concat_video`, `final_audio` (`music` / `clips` / `none`), `final_fit`
 (`pad` / `stretch` / `crop`), `final_fps` (0 = the fastest rate among the clips), `final_crf`.

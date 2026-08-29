@@ -709,17 +709,40 @@ def make_media_client(provider: str, api_key: str = "", timeout: int = 600, verb
     raise RenderError(f"{PREFIX} unknown media provider '{provider}'. Pick one of {MEDIA_PROVIDERS}.")
 
 
+def _announced(call: Callable[[], bytes], index: int, on_done: Callable[[int, bytes], None] | None):
+    """Run one render and hand the result over as soon as it lands, not at the end.
+
+    The callback is what feeds the node's live gallery, so a failure in it must cost
+    the preview and nothing else - the bytes were already paid for.
+    """
+
+    def job() -> bytes:
+        payload = call()
+        if on_done and payload:
+            try:
+                on_done(index, payload)
+            except Exception as exc:  # pragma: no cover - defensive
+                warn(f"preview for item {index + 1} failed: {exc}")
+        return payload
+
+    return job
+
+
 def render_images(
     client,
     model: str,
     requests_: list[ImageRequest],
     concurrency: int = 2,
     errors: list[Exception] | None = None,
+    on_done: Callable[[int, bytes], None] | None = None,
 ) -> list[bytes | None]:
     if client is None or not requests_:
         return []
     log(f"rendering {len(requests_)} image(s) with {client.name}/{model} (concurrency {concurrency})")
-    jobs = [lambda request=request: client.image(model, request) for request in requests_]
+    jobs = [
+        _announced(lambda request=request: client.image(model, request), index, on_done)
+        for index, request in enumerate(requests_)
+    ]
     return _in_parallel(jobs, concurrency, "image", errors)
 
 
@@ -729,11 +752,15 @@ def render_videos(
     requests_: list[VideoRequest],
     concurrency: int = 2,
     errors: list[Exception] | None = None,
+    on_done: Callable[[int, bytes], None] | None = None,
 ) -> list[bytes | None]:
     if client is None or not requests_:
         return []
     log(f"rendering {len(requests_)} video(s) with {client.name}/{model} (concurrency {concurrency})")
-    jobs = [lambda request=request: client.video(model, request) for request in requests_]
+    jobs = [
+        _announced(lambda request=request: client.video(model, request), index, on_done)
+        for index, request in enumerate(requests_)
+    ]
     return _in_parallel(jobs, concurrency, "video", errors)
 
 
@@ -747,18 +774,27 @@ def placeholder_image(aspect_ratio: str = "16:9", base: int = 512):
 
 
 def save_videos(
-    payloads: list[bytes | None], prefix: str = "music2prompts", temporary: bool = False
+    payloads: list[bytes | None],
+    prefix: str = "music2prompts",
+    temporary: bool = False,
+    reuse: dict[int, str] | None = None,
 ) -> list[str]:
     """Write finished clips to disk; returns their paths.
 
     They always land somewhere - assembling the final film needs real files - but
     ``temporary`` puts them in ComfyUI's temp folder instead of its output folder.
+    ``reuse`` names files the live preview already wrote there, so a clip is not
+    written to the temp folder twice.
     """
     directory = output_directory(temporary=temporary)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     paths: list[str] = []
     for index, payload in enumerate(payloads):
         if not payload:
+            continue
+        written = (reuse or {}).get(index) if temporary else None
+        if written and os.path.exists(written):
+            paths.append(written)
             continue
         path = os.path.join(directory, f"{prefix}_{stamp}_shot{index + 1:03d}.mp4")
         try:

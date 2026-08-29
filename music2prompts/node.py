@@ -12,6 +12,7 @@ from comfy_api.latest import io
 from . import asr as asr_module
 from . import model_cache
 from . import music_dsp
+from . import preview as preview_module
 from . import render as render_module
 from . import video as video_module
 from .h3_format import H3Shot, Speaker, Subject, render_i2va, render_ref2va
@@ -314,6 +315,13 @@ class Music2PromptsLM(io.ComfyNode):
                     ),
                 ),
                 io.Boolean.Input(
+                    "live_preview", default=True, advanced=True,
+                    tooltip=(
+                        "Show each image and clip in the node as soon as it is rendered, "
+                        "instead of waiting for the whole batch."
+                    ),
+                ),
+                io.Boolean.Input(
                     "save_rendered_video", default=True, advanced=True,
                     tooltip="Write the clips into ComfyUI/output/music2prompts (needed for the VIDEO output).",
                 ),
@@ -468,6 +476,8 @@ class Music2PromptsLM(io.ComfyNode):
                 io.Video.Output(display_name="videos", is_output_list=True),
                 io.Video.Output(display_name="final_video"),
             ],
+            # the gallery is addressed per node, so the run has to know which one it is
+            hidden=[io.Hidden.unique_id],
         )
 
     # ------------------------------------------------------------------ execution
@@ -506,6 +516,7 @@ class Music2PromptsLM(io.ComfyNode):
         fal_api_key: str = "",
         video_prompt_source: str = "i2va",
         render_subject_sheets: bool = False,
+        live_preview: bool = True,
         save_rendered_video: bool = True,
         concat_video: bool = True,
         final_audio: str = "music",
@@ -554,6 +565,12 @@ class Music2PromptsLM(io.ComfyNode):
         provider = (llm_provider or "lmstudio").strip().lower()
         wants_images = (image_provider or "none").lower() not in {"", "none"}
         wants_video = (video_provider or "none").lower() not in {"", "none"}
+        feed = preview_module.PreviewFeed(
+            getattr(cls.hidden, "unique_id", None),
+            filename_prefix,
+            enabled=live_preview and (wants_images or wants_video),
+        )
+        feed.reset()
         progress = _ProgressReporter(BASE_STAGES + int(wants_images) + int(wants_video), verbose)
 
         samples, sample_rate = audio_to_mono(audio)
@@ -795,6 +812,9 @@ class Music2PromptsLM(io.ComfyNode):
                 ],
                 render_concurrency,
                 image_errors,
+                on_done=lambda index, data, total=len(start_frames): feed.publish(
+                    "image", index, data, label=f"shot {index + 1}", total=total
+                ),
             )
             if not any(image_payloads):
                 raise RuntimeError(
@@ -825,6 +845,13 @@ class Music2PromptsLM(io.ComfyNode):
                         for index, prompt in enumerate(subject_prompts)
                     ],
                     render_concurrency,
+                    on_done=lambda index, data, total=len(subject_prompts): feed.publish(
+                        "image",
+                        len(start_frames) + index,
+                        data,
+                        label=subject_names[index] if index < len(subject_names) else f"subject {index + 1}",
+                        total=total,
+                    ),
                 )
                 subject_images_out = [
                     render_module.image_bytes_to_tensor(data) for data in subject_payloads if data
@@ -858,7 +885,14 @@ class Music2PromptsLM(io.ComfyNode):
                 )
             video_errors: list[Exception] = []
             payloads = render_module.render_videos(
-                video_client, video_model, video_requests, render_concurrency, video_errors
+                video_client,
+                video_model,
+                video_requests,
+                render_concurrency,
+                video_errors,
+                on_done=lambda index, data, total=len(video_requests): feed.publish(
+                    "video", index, data, label=f"shot {index + 1}", total=total
+                ),
             )
             if not any(payloads):
                 raise RuntimeError(
@@ -869,7 +903,10 @@ class Music2PromptsLM(io.ComfyNode):
             # the clips are always written out: the VIDEO output and the final cut
             # both need real files. save_rendered_video only decides output vs temp.
             video_paths = render_module.save_videos(
-                payloads, filename_prefix, temporary=not save_rendered_video
+                payloads,
+                filename_prefix,
+                temporary=not save_rendered_video,
+                reuse=feed.paths("video"),
             )
             videos_out = cls._videos_from_paths(video_paths)
             log(f"{sum(1 for item in payloads if item)}/{len(video_requests)} clips rendered")
@@ -949,6 +986,7 @@ class Music2PromptsLM(io.ComfyNode):
             subject_images_out,
             videos_out,
             final_video,
+            ui=feed.ui() or None,
         )
 
     # ------------------------------------------------------------------ helpers
