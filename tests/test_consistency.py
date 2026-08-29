@@ -111,6 +111,24 @@ def test_the_audio_is_the_last_thing_to_be_dropped_on_a_refusal():
     assert "audio_url" not in optional, "dropping the vocal to satisfy the endpoint defeats the point"
 
 
+def test_the_endpoint_is_told_not_to_rewrite_our_prompt():
+    """H3 rewrites the prompt per request by default, re-inventing each shot's look."""
+    h3 = {"required": ["prompt"], "properties": {"prompt": {}, "prompt_expansion_mode": {"default": "balanced"}}}
+    wan = {"required": [], "properties": {"prompt": {}, "enable_prompt_expansion": {"type": "boolean"}}}
+    quiet = VideoRequest(prompt="p", seconds=6, expansion="minimal")
+    assert build_fal_video_payload("h3", quiet, h3)[0]["prompt_expansion_mode"] == "fast"
+    assert build_fal_video_payload("wan", quiet, wan)[0]["enable_prompt_expansion"] is False
+    loud = VideoRequest(prompt="p", seconds=6, expansion="rich")
+    assert build_fal_video_payload("h3", loud, h3)[0]["prompt_expansion_mode"] == "quality"
+    assert build_fal_video_payload("wan", loud, wan)[0]["enable_prompt_expansion"] is True
+
+
+def test_the_endpoints_own_default_is_left_alone_when_asked():
+    h3 = {"required": ["prompt"], "properties": {"prompt": {}, "prompt_expansion_mode": {}}}
+    payload, _ = build_fal_video_payload("h3", VideoRequest(prompt="p", expansion="model default"), h3)
+    assert "prompt_expansion_mode" not in payload
+
+
 # --------------------------------------------------------------------------- model index
 
 

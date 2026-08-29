@@ -135,6 +135,14 @@ an attached file. The same rewrite binds each subject to the image that defines 
 and what was missing before.
 
 OpenRouter's video API has no audio input of any kind; the node says so rather than pretending.
+
+#### Who writes the final prompt
+
+Both MiniMax H3 endpoints rewrite the prompt before generating (`prompt_expansion_mode` defaults to
+`balanced`, and the wan endpoints do the same behind `enable_prompt_expansion`). That rewrite happens
+per request, so every shot's look is re-invented independently by fal's own writer - working directly
+against one art direction. `prompt_expansion` defaults to `minimal`, which keeps the prompt this node
+assembled; `rich` hands the endpoint's writer the wheel, and `model default` sends nothing.
 * `video_provider` + `fal_video_model` / `openrouter_video_model` render the clips. With
   `video_prompt_source = i2va` the rendered start frame is sent as the first frame; with `ref2va` the
   rendered subject sheets are sent as references (turn on `render_subject_sheets`), which is what the
@@ -222,7 +230,7 @@ OpenRouter's video API has no audio input of any kind; the node says so rather t
 
 **Cloud keys & rendering** — `openrouter_api_key`, `openai_api_key`, `anthropic_api_key`,
 `fal_api_key` (all empty = read from the environment), `video_prompt_source` (`i2va` / `ref2va`),
-`render_subject_sheets`, `style_anchor`, `lipsync_audio`, `live_preview`,
+`render_subject_sheets`, `style_anchor`, `lipsync_audio`, `prompt_expansion`, `live_preview`,
 `save_rendered_images`, `save_rendered_video`, `save_transcript`, `render_timeout`.
 
 **Final film** — `concat_video`, `final_audio` (`music` / `clips` / `none`), `final_fit`

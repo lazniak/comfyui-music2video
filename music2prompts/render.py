@@ -29,6 +29,9 @@ FAL_SCHEMA_URL = "https://fal.ai/api/openapi/queue/openapi.json"
 
 MEDIA_PROVIDERS = ["none", "fal", "openrouter"]
 
+#: How much of our prompt the endpoint is allowed to rewrite before generating.
+EXPANSION_MODES = ["minimal", "model default", "rich"]
+
 # Text-to-image endpoints: these render the first image of a run, and nothing else -
 # not one of them declares an input for a reference image.
 FALLBACK_FAL_IMAGE = [
@@ -112,6 +115,8 @@ class VideoRequest:
     #: The shot's own audio as a data: URI. Only sent to endpoints that declare an input
     #: for a driving audio track; on the rest there is nothing to send it to.
     audio: str = ""
+    #: "minimal", "rich", or "" to leave the endpoint's own default alone.
+    expansion: str = ""
     label: str = ""
 
 
@@ -586,6 +591,17 @@ def build_fal_video_payload(
                 offer("duration", closest)
         else:
             offer("duration", seconds)
+
+    expansion = (request.expansion or "").strip().lower()
+    if expansion in {"minimal", "rich"}:
+        # Both H3 endpoints rewrite the prompt before generating (prompt_expansion_mode
+        # defaults to "balanced"), and the wan endpoints do the same behind a boolean. A
+        # rewrite is per-request, so it re-invents the look of every shot independently -
+        # which is the last thing a film assembled from one art direction needs.
+        if "prompt_expansion_mode" in properties:
+            offer("prompt_expansion_mode", "fast" if expansion == "minimal" else "quality")
+        if "enable_prompt_expansion" in properties:
+            offer("enable_prompt_expansion", expansion == "rich")
 
     if request.audio:
         audio_field = _first_field(properties, AUDIO_LIST_FIELDS + AUDIO_URL_FIELDS) if known else ""

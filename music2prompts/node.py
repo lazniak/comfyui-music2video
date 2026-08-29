@@ -336,6 +336,19 @@ class Music2PromptsLM(io.ComfyNode):
                         "instead of waiting for the whole batch."
                     ),
                 ),
+                io.Combo.Input(
+                    "prompt_expansion",
+                    options=render_module.EXPANSION_MODES,
+                    default="minimal",
+                    advanced=True,
+                    tooltip=(
+                        "How much the video endpoint may rewrite the prompt before generating. "
+                        "Both MiniMax H3 endpoints do this by default and decide per request, so "
+                        "each shot's look gets re-invented independently - 'minimal' keeps the "
+                        "prompt this node assembled. 'rich' hands the endpoint's own writer the "
+                        "wheel, which can help a thin brief and hurt a consistent one."
+                    ),
+                ),
                 io.Boolean.Input(
                     "lipsync_audio", default=True, advanced=True,
                     tooltip=(
@@ -566,6 +579,7 @@ class Music2PromptsLM(io.ComfyNode):
         video_prompt_source: str = "i2va",
         render_subject_sheets: bool = False,
         live_preview: bool = True,
+        prompt_expansion: str = "minimal",
         lipsync_audio: bool = True,
         style_anchor: bool = True,
         save_rendered_images: bool = True,
@@ -1010,6 +1024,7 @@ class Music2PromptsLM(io.ComfyNode):
                         first_frame="" if use_reference else (render_module.data_uri(frame) if frame else ""),
                         references=subject_uris if use_reference else [],
                         audio=audio_uris[index] if index < len(audio_uris) else "",
+                        expansion=prompt_expansion,
                         label=f"shot {slot.index}",
                     )
                 )

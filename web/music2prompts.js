@@ -39,7 +39,7 @@ const RENDER_ONLY = [
   "live_preview", "save_rendered_images", "style_anchor",
 ];
 // only meaningful once clips are rendered
-const VIDEO_ONLY = ["concat_video", "final_audio", "final_fit", "final_fps", "final_crf", "lipsync_audio"];
+const VIDEO_ONLY = ["concat_video", "final_audio", "final_fit", "final_fps", "final_crf", "lipsync_audio", "prompt_expansion"];
 
 // which cached list feeds which dropdown
 const LISTS = {
