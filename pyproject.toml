@@ -36,15 +36,15 @@ classifiers = [
 better-dsp = ["librosa"]
 
 [project.urls]
-Repository = "https://github.com/lazniak/comfyui-ultimate-node"
-Documentation = "https://github.com/lazniak/comfyui-ultimate-node#readme"
-"Bug Tracker" = "https://github.com/lazniak/comfyui-ultimate-node/issues"
+Repository = "https://github.com/lazniak/comfyui-music2video"
+Documentation = "https://github.com/lazniak/comfyui-music2video#readme"
+"Bug Tracker" = "https://github.com/lazniak/comfyui-music2video/issues"
 
 [tool.comfy]
 PublisherId = "lazniak"
 DisplayName = "Music2Video"
-Icon = "https://raw.githubusercontent.com/lazniak/comfyui-ultimate-node/main/assets/icon.png"
-Banner = "https://raw.githubusercontent.com/lazniak/comfyui-ultimate-node/main/assets/banner.png"
+Icon = "https://raw.githubusercontent.com/lazniak/comfyui-music2video/main/assets/icon.png"
+Banner = "https://raw.githubusercontent.com/lazniak/comfyui-music2video/main/assets/banner.png"
 # comfy_api.latest (the V3 node schema, ComfyExtension, io.Custom and output tooltips)
 # first shipped in ComfyUI v0.3.48; the pack cannot load on anything older.
 requires-comfyui = ">=0.3.48"

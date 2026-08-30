@@ -38,7 +38,7 @@ comfy node install music2video
 **By hand**
 
 ```bash
-git clone https://github.com/lazniak/comfyui-ultimate-node ComfyUI/custom_nodes/music2video
+git clone https://github.com/lazniak/comfyui-music2video ComfyUI/custom_nodes/music2video
 ```
 
 Registry page: [registry.comfy.org/nodes/music2video](https://registry.comfy.org/nodes/music2video).
@@ -62,7 +62,7 @@ Needs **ComfyUI ≥ 0.3.48** — the first release carrying the V3 node schema
 Instalacja przez junction (Windows, bez kopiowania):
 
 ```bash
-cmd /c mklink /J "D:\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI\custom_nodes\music2video" "D:\code\comfyui-ultimate-node"
+cmd /c mklink /J "D:\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI\custom_nodes\music2video" "D:\code\comfyui-music2video"
 ```
 
 ---

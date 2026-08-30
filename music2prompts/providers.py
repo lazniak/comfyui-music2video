@@ -246,7 +246,7 @@ class OpenAICompatClient(_CloudClient):
         }
         if self.name == "openrouter":
             headers["X-Title"] = "ComfyUI Music2Video"
-            headers["HTTP-Referer"] = "https://github.com/lazniak/comfyui-ultimate-node"
+            headers["HTTP-Referer"] = "https://github.com/lazniak/comfyui-music2video"
         return headers
 
     def _once(self, system, user, schema, images, *, model, temperature, max_tokens, seed, reasoning_effort, structured):
