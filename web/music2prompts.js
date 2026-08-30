@@ -21,11 +21,14 @@
  *
  * 4. Rewrite renamed widget values on load, so a workflow saved before a rename still
  *    passes the server's combo validation.
+ *
+ * 5. On the concat node, hide the two mix gains unless the audio mode is actually "mix".
  */
 
 import { app } from "../../scripts/app.js";
 
 const NODE_ID = "Music2PromptsLM";
+const CONCAT_ID = "Music2VideoConcat";
 const ROUTE = "/music2prompts/models";
 const PIPE_TYPE = "M2P_PIPE";
 
@@ -183,13 +186,25 @@ function migrate(node) {
   }
 }
 
-function watch(node, name) {
+/** The concat node: the two mix gains mean nothing unless the mode is "mix". */
+function refreshConcat(node) {
+  const widgets = widgetsOf(node);
+  const mixing = String(widgets.audio_mode?.value ?? "") === "mix";
+  let changed = false;
+  for (const name of ["music_gain", "clip_gain"]) {
+    changed = setVisible(widgets[name], mixing) || changed;
+  }
+  if (changed) invalidate(node);
+  return changed;
+}
+
+function watch(node, name, apply = refresh) {
   const widget = widgetsOf(node)[name];
   if (!widget) return;
   const previous = widget.callback;
   widget.callback = function (...args) {
     const result = previous?.apply(this, args);
-    refresh(node);
+    apply(node);
     return result;
   };
 }
@@ -214,6 +229,21 @@ app.registerExtension({
   },
 
   async nodeCreated(node) {
+    if (node.comfyClass === CONCAT_ID) {
+      try {
+        watch(node, "audio_mode", refreshConcat);
+        refreshConcat(node);
+        const onConfigure = node.onConfigure;
+        node.onConfigure = function (...args) {
+          const result = onConfigure?.apply(this, args);
+          refreshConcat(this);
+          return result;
+        };
+      } catch (error) {
+        console.warn("[Music2Video] concat node behaviour disabled:", error);
+      }
+      return;
+    }
     if (node.comfyClass !== NODE_ID) return;
     try {
       for (const name of ["llm_provider", "image_provider", "video_provider"]) watch(node, name);

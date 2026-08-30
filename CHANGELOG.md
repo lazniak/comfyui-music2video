@@ -3,6 +3,20 @@
 The section matching the version in `pyproject.toml` is published to the Comfy Registry
 as that version's release notes, so keep the heading format `## <version>`.
 
+## 1.2.0
+
+- New node: **🎵 Music2Video Concat**. Takes a list of VIDEO from anywhere in the graph -
+  an LTX or Wan subgraph, a sampler, a load-from-disk node - and cuts it into one film,
+  which the main node could only do for clips it had rendered itself. Optional `pipe`
+  input supplies the shot durations, so every cut lands within half a frame of the beat
+  grid instead of drifting; optional `audio` input carries the source track.
+- Its `audio_mode` decides the soundtrack: `source audio` (the track alone), `mix` (the
+  track and the clips' own audio summed, balanced by `music_gain` and `clip_gain` and
+  clipped so the sum cannot wrap), `video audio` (only what the models generated) or
+  `silent`.
+- `mix` is a new mode in the muxer generally, so the main node's `final_audio` offers it
+  too.
+
 ## 1.1.0
 
 - The per-shot audio clips now travel on the pipe as well, as a list, and **Music2Video

@@ -195,7 +195,8 @@ assembled; `rich` hands the endpoint's writer the wheel, and `model default` sen
   Every clip is placed on a single grid — one size, one frame rate — and trimmed or frozen on its
   last frame so it lasts exactly as long as its shot; the film therefore stays in sync with the
   track. Clips whose aspect differs are letterboxed (`final_fit`), and `final_audio` decides the
-  soundtrack: `music` (your track), `clips` (the audio the video model generated) or `none`.
+  soundtrack: `music` (your track), `clips` (the audio the video model generated), `mix` (both
+  summed) or `none`.
 * When a single shot fails to render, its slot in `images` stays filled with a black frame so the
   list still lines up with the shots. When *every* shot fails, the node raises with the provider's
   own error instead of returning empty lists.
@@ -267,7 +268,7 @@ assembled; `rich` hands the endpoint's writer the wheel, and `model default` sen
 `render_subject_sheets`, `style_anchor`, `lipsync_audio`, `prompt_expansion`, `live_preview`,
 `save_rendered_images`, `save_rendered_video`, `save_transcript`, `render_timeout`.
 
-**Final film** — `concat_video`, `final_audio` (`music` / `clips` / `none`), `final_fit`
+**Final film** — `concat_video`, `final_audio` (`music` / `clips` / `mix` / `none`), `final_fit`
 (`pad` / `stretch` / `crop`), `final_fps` (0 = the fastest rate among the clips), `final_crf`.
 
 **Music & shots** — `analyze_music`, `snap_cuts_to_beats`, `audio_clip_padding`.
@@ -325,6 +326,30 @@ Everything in the pipe except `transcript` and `analysis_json` is a **list**.
 > sockets, and the links to the media sockets move up with them. Re-wire the media
 > outputs, then take the rest off a Pipe Expand node.
 
+### Cutting clips you rendered yourself
+
+The main node only assembles what **it** rendered. If the clips come from somewhere else in
+the graph — an LTX or Wan subgraph, a sampler, a load-from-disk node — the film is put
+together by **🎵 Music2Video Concat**:
+
+| Input | |
+|---|---|
+| `videos` | The clips, as a list. It takes the whole list at once rather than running per clip |
+| `pipe` | *optional* — read for the shot durations only, so each clip is trimmed or held to last exactly as long as its shot |
+| `audio` | *optional* — the source track, for the two modes that use it |
+| `audio_mode` | `source audio` (the track alone), `mix` (track + clip audio, balanced by `music_gain` / `clip_gain`), `video audio` (only what the models generated), `silent` |
+| `fit`, `fps`, `width`, `height`, `crf` | The grid every clip is placed on. `0` takes it from the clips |
+
+Out come the finished `video`, the `path` it was written to, and its `duration`.
+
+**Wire the pipe.** Without it the clips keep whatever length they came back at, and the film
+drifts out of sync with the track as the errors accumulate; with it every cut lands within
+half a frame of where the beat grid put it. If a render failed the clip list is shorter than
+the shot list, the two no longer line up, and the node says so and falls back to the clips'
+own lengths rather than misaligning the whole film.
+
+Nothing is generated and nothing is billed — one muxing pass with PyAV, no ffmpeg binary.
+
 ### Wiring examples
 
 All of these start with `pipe` → **Music2Video Pipe Expand**; the field names below are
@@ -338,6 +363,9 @@ that node's outputs.
 * **MiniMax H3, reference-to-video** → generate the subject references from
   `image_prompts_reference`, feed them as media, and use `video_prompts_ref2va[i]` with
   `mode = reference`.
+* **Rendering the clips outside this pack** → `video_prompts_i2va[i]` (or `ref2va`) into whatever
+  video node you use, collect its VIDEO outputs into a list, then `videos` + `pipe` + `audio` into
+  **Music2Video Concat**. That is the same assembly the main node does for its own renders.
 * **Lipsync / audio-driven video** → `audio_clips[i]` is the exact slice of the track between
   `start_times[i]` and `end_times[i]`, at the original sample rate and channel count, so it lines up
   with the shot it belongs to. Wire it into any audio-driven node (S2V, OmniHuman, talking-head,

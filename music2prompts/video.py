@@ -31,7 +31,8 @@ from .util import PREFIX, log, warn
 AAC_RATES = (96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
 LAYOUTS = {1: "mono", 2: "stereo", 6: "5.1"}
 FIT_MODES = ["pad", "stretch", "crop"]
-AUDIO_MODES = ["music", "clips", "none"]
+#: "mix" sums the track and the clips' own audio; the two gains below balance them.
+AUDIO_MODES = ["music", "clips", "mix", "none"]
 MAX_RATE = 120  # a clip that mis-reports its frame rate must not set the grid for the film
 
 
@@ -187,6 +188,8 @@ def concat_clips(  # noqa: PLR0912, PLR0915 - one linear muxing pass, kept in on
     height: int | None = None,
     fps: float | None = None,
     fit: str = "pad",
+    music_gain: float = 1.0,
+    clip_gain: float = 0.5,
     crf: int = 20,
     preset: str = "medium",
     interpolation: str = "BICUBIC",  # uppercase; "bicubic" raises KeyError
@@ -209,10 +212,14 @@ def concat_clips(  # noqa: PLR0912, PLR0915 - one linear muxing pass, kept in on
     mode = (audio_mode or "music").lower()
     if mode not in AUDIO_MODES:
         mode = "music"
-    if mode == "music" and audio is None:
+    has_clip_audio = any(info["has_audio"] for info in infos)
+    if mode in {"music", "mix"} and audio is None:
         warn("no music track supplied; keeping the clips' own audio instead")
         mode = "clips"
-    if mode == "clips" and not any(info["has_audio"] for info in infos):
+    if mode == "mix" and not has_clip_audio:
+        warn("none of the clips carry audio; the track goes under the film on its own")
+        mode = "music"
+    if mode == "clips" and not has_clip_audio:
         mode = "none"
 
     log(
@@ -232,7 +239,7 @@ def concat_clips(  # noqa: PLR0912, PLR0915 - one linear muxing pass, kept in on
     layout = "stereo"
     planes = None
     source_rate = 48000
-    if mode == "music":
+    if mode in {"music", "mix"}:
         planes, source_rate, layout = _audio_planes(audio or {})
         audio_rate = _snap_rate(source_rate)
         audio_stream = container.add_stream("aac", rate=audio_rate, layout=layout)
@@ -269,6 +276,11 @@ def concat_clips(  # noqa: PLR0912, PLR0915 - one linear muxing pass, kept in on
         elif audio_stream is not None and mode == "clips":
             _write_clip_audio(
                 container, audio_stream, infos, frames_per_clip, audio_rate, layout, float(step)
+            )
+        elif audio_stream is not None and mode == "mix" and planes is not None:
+            _write_mix(
+                container, audio_stream, infos, frames_per_clip, planes, source_rate,
+                audio_rate, layout, float(step), duration, music_gain, clip_gain,
             )
         if audio_stream is not None:
             for packet in audio_stream.encode(None):
@@ -428,7 +440,6 @@ def _write_clip_audio(
     layout: str, step: float,
 ) -> None:
     """Keep the audio the video model generated, padded so the cuts stay aligned."""
-    import av
     import numpy as np
 
     channels = 1 if layout == "mono" else 2
@@ -438,28 +449,100 @@ def _write_clip_audio(
         elapsed += frames * step
         target = int(round(elapsed * audio_rate))
         if info["has_audio"]:
-            chunks = []
-            with av.open(info["path"], mode="r") as source:
-                track = source.streams.audio[0]
-                resampler = av.audio.resampler.AudioResampler(
-                    format="fltp", layout=layout, rate=audio_rate
-                )
-                for packet in source.demux(track):
-                    try:
-                        decoded = packet.decode()
-                    except av.error.FFmpegError:
-                        continue
-                    for part in decoded:
-                        chunks.extend(piece.to_ndarray() for piece in resampler.resample(part))
-                chunks.extend(piece.to_ndarray() for piece in resampler.resample(None))
-            if chunks:
-                segment = np.concatenate(chunks, axis=1)
+            segment = _decode_audio(info["path"], audio_rate, layout)
+            if segment is not None:
                 keep = max(0, min(segment.shape[1], target - written))
                 if keep:
                     written += _mux_audio(container, stream, segment[:, :keep], audio_rate, layout, written)
         if written < target:  # a silent clip must still take its slot
             silence = np.zeros((channels, target - written), dtype="float32")
             written += _mux_audio(container, stream, silence, audio_rate, layout, written)
+
+
+def _decode_audio(path: str, audio_rate: int, layout: str):
+    """One clip's audio as planar float32 at ``audio_rate``, or None if it has none."""
+    import av
+    import numpy as np
+
+    chunks = []
+    with av.open(path, mode="r") as source:
+        if not source.streams.audio:
+            return None
+        track = source.streams.audio[0]
+        resampler = av.audio.resampler.AudioResampler(format="fltp", layout=layout, rate=audio_rate)
+        for packet in source.demux(track):
+            try:
+                decoded = packet.decode()
+            except av.error.FFmpegError:
+                continue  # a damaged packet costs its own audio, never the whole film
+            for part in decoded:
+                chunks.extend(piece.to_ndarray() for piece in resampler.resample(part))
+        chunks.extend(piece.to_ndarray() for piece in resampler.resample(None))
+    return np.concatenate(chunks, axis=1) if chunks else None
+
+
+def _fit_length(planes, samples: int):
+    """Trim or zero-pad to exactly ``samples`` columns."""
+    import numpy as np
+
+    if planes.shape[1] >= samples:
+        return planes[:, :samples]
+    return np.pad(planes, ((0, 0), (0, samples - planes.shape[1])))
+
+
+def _resampled(planes, source_rate: int, target_rate: int, layout: str):
+    """The track at the container's sample rate, ready to be summed with the clips."""
+    import av
+    import numpy as np
+
+    if source_rate == target_rate:
+        return planes
+    frame = av.AudioFrame.from_ndarray(np.ascontiguousarray(planes), format="fltp", layout=layout)
+    frame.sample_rate = source_rate
+    frame.pts = 0
+    frame.time_base = Fraction(1, source_rate)
+    resampler = av.audio.resampler.AudioResampler(format="fltp", layout=layout, rate=target_rate)
+    chunks = [piece.to_ndarray() for piece in resampler.resample(frame)]
+    chunks.extend(piece.to_ndarray() for piece in resampler.resample(None))
+    return np.concatenate(chunks, axis=1) if chunks else planes
+
+
+def _clip_audio_planes(infos: list[dict], frames_per_clip: list[int], audio_rate: int,
+                       layout: str, step: float):
+    """Every clip's own audio laid on the film's timeline, silence where a clip has none."""
+    import numpy as np
+
+    channels = 1 if layout == "mono" else 2
+    total = int(round(sum(frames_per_clip) * step * audio_rate))
+    timeline = np.zeros((channels, max(total, 1)), dtype="float32")
+    elapsed = 0.0
+    written = 0
+    for info, frames in zip(infos, frames_per_clip):
+        elapsed += frames * step
+        target = min(int(round(elapsed * audio_rate)), timeline.shape[1])
+        if info["has_audio"]:
+            segment = _decode_audio(info["path"], audio_rate, layout)
+            keep = 0 if segment is None else max(0, min(segment.shape[1], target - written))
+            if keep:
+                timeline[:, written:written + keep] = segment[:, :keep]
+        written = target  # a short or silent clip still takes its slot on the timeline
+    return timeline
+
+
+def _write_mix(container, stream, infos: list[dict], frames_per_clip: list[int], planes,
+               source_rate: int, audio_rate: int, layout: str, step: float, duration: float,
+               music_gain: float, clip_gain: float) -> None:
+    """The track and the clips' own audio summed, then clipped so the sum cannot wrap."""
+    import numpy as np
+
+    samples = max(int(round(duration * audio_rate)), 1)
+    bed = _fit_length(_resampled(planes, source_rate, audio_rate, layout), samples).astype("float32")
+    bed = bed * float(music_gain)
+    clips = _clip_audio_planes(infos, frames_per_clip, audio_rate, layout, step)
+    bed += _fit_length(clips, samples) * float(clip_gain)
+    np.clip(bed, -1.0, 1.0, out=bed)
+    log(f"mixed audio: track x{music_gain:.2f} + clip audio x{clip_gain:.2f}")
+    _mux_audio(container, stream, bed, audio_rate, layout, 0)
 
 
 def _mux_audio(container, stream, planes, audio_rate: int, layout: str, offset: int) -> int:
