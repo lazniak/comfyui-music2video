@@ -15,6 +15,25 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v7
+
+      # comfy-cli reads COMFY_NODE_CHANGELOG for the version's release notes, and the
+      # composite action passes its environment through, so the section of CHANGELOG.md
+      # that matches pyproject's version becomes what the registry shows under Updates.
+      # Best effort: a missing or unparseable changelog must never block a release.
+      - name: Read the changelog for this version
+        continue-on-error: true
+        run: |
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import pathlib, re, tomllib
+
+          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          match = re.search(rf"^## {re.escape(version)}\s*$(.*?)(?=^## |\Z)", text, re.M | re.S)
+          notes = (match.group(1).strip() if match else "")
+          if notes:
+              print(f"COMFY_NODE_CHANGELOG<<M2V_EOF\n{notes}\nM2V_EOF")
+          PY
+
       - name: Publish Custom Node
         uses: Comfy-Org/publish-node-action@main
         with:

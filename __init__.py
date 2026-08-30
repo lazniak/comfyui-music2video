@@ -6,7 +6,7 @@ also be imported outside ComfyUI (tests, tooling) without blowing up.
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # served to the browser: hides the widgets of providers you did not select, refreshes
 # the model dropdowns from the route registered below, and shows each rendered image

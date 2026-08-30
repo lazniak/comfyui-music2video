@@ -2,7 +2,7 @@
 # Registry node id - immutable once published, used by `comfy node install music2video`
 # and in the URL https://registry.comfy.org/nodes/music2video
 name = "music2video"
-version = "1.0.0"
+version = "1.1.0"
 description = """\
 Turn a track into a finished music video inside ComfyUI. Whisper large-v3 transcribes the lyrics \
 with word-level timing, librosa (or a built-in numpy/scipy fallback) finds the BPM, the beat grid \
