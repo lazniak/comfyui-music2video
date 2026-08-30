@@ -60,6 +60,17 @@ def run_pipeline(**overrides):
 # --------------------------------------------------------------------------- checks
 
 
+def blocking(value) -> bool:
+    """True when this output is an execution blocker, list-wrapped or not."""
+    try:
+        from comfy_execution.graph_utils import ExecutionBlocker
+    except ImportError:  # outside ComfyUI there is nothing to block with
+        return not value
+    if isinstance(value, list):
+        return len(value) == 1 and isinstance(value[0], ExecutionBlocker)
+    return isinstance(value, ExecutionBlocker)
+
+
 def values(result) -> dict:
     """The run's outputs by name: the pipe unpacked, plus the media sockets."""
     from music2prompts import pipe as pipe_module
@@ -92,10 +103,12 @@ def check_lists_are_aligned(result) -> None:
     assert indices == list(range(1, count + 1))
     assert len(reference_prompts) == len(subject_names) == len(SUBJECTS)
     assert transcript == ""
-    assert images == [] and subject_images == [] and videos == [], (
-        "nothing may be rendered while both providers are 'none'"
-    )
-    assert final_video is None, "there is no film to assemble without clips"
+    # nothing is rendered at 'pipe-steps', and an empty media socket goes out as a
+    # blocker rather than an empty list - the latter crashes ComfyUI's list expansion
+    # in whatever is wired to it
+    for name, value in (("images", images), ("subject_images", subject_images),
+                        ("videos", videos), ("final_video", final_video)):
+        assert blocking(value), f"{name} should be blocked, not {value!r}"
     json.loads(analysis_json)
 
 

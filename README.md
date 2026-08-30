@@ -198,10 +198,15 @@ assembled; `rich` hands the endpoint's writer the wheel, and `model default` sen
   soundtrack: `music` (your track), `clips` (the audio the video model generated) or `none`.
 * When a single shot fails to render, its slot in `images` stays filled with a black frame so the
   list still lines up with the shots. When *every* shot fails, the node raises with the provider's
-  own error instead of returning empty lists — an empty list wired into another node makes ComfyUI
-  fail with a bare `IndexError: list index out of range`.
-* Do not wire `images` / `videos` / `final_video` while the matching provider is `pipe-steps`: those
-  outputs are then empty, and the same `IndexError` follows.
+  own error instead of returning empty lists.
+* **Wiring a media output on a run that renders nothing is safe.** ComfyUI slices every input once
+  per downstream execution (`v[i if len(v) > i else -1]`), so an empty list reaches `v[-1]` and the
+  whole prompt dies with a bare `IndexError: list index out of range` — a traceback that names
+  neither the node nor the wire. Instead of an empty list, each media socket hands out a silent
+  execution blocker: the node wired to it is skipped, the log says which socket went empty and why,
+  and the rest of the graph — prompts, timings, audio — finishes normally. The same applies to every
+  list output of **Pipe Expand**: `reference_subjects` on an instrumental with no subjects blocks
+  its consumer rather than crashing the run.
 
 ---
 

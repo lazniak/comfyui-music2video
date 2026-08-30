@@ -14,7 +14,7 @@ from __future__ import annotations
 from comfy_api.latest import io
 
 from . import pipe as pipe_module
-from .util import PREFIX
+from .util import PREFIX, blocked_when_empty
 
 #: display_name -> the io class that declares it
 KINDS = {"String": io.String, "Int": io.Int, "Float": io.Float, "Audio": io.Audio,
@@ -74,4 +74,14 @@ class Music2PromptsPipeExpand(io.ComfyNode):
                 f"{PREFIX} the 'pipe' input takes the pipe output of the Music2Video node, "
                 f"not a {type(pipe).__name__}."
             )
-        return io.NodeOutput(pipe, *pipe_module.unpack(pipe))
+        # A list output that came back empty would crash ComfyUI's list expansion in
+        # whatever is wired to it; block that socket instead and let the rest run. The
+        # single-value fields are left alone - an empty transcript is a normal answer
+        # for an instrumental, and an empty string breaks nothing downstream.
+        values = [
+            blocked_when_empty(value, field.name, "this run produced none")
+            if field.is_list
+            else value
+            for field, value in zip(pipe_module.FIELDS, pipe_module.unpack(pipe))
+        ]
+        return io.NodeOutput(pipe, *values)

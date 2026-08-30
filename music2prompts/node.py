@@ -28,6 +28,7 @@ from .shots import ShotSlot, attach_lyrics, plan_shots
 from .util import (
     PREFIX,
     as_list,
+    blocked_when_empty,
     audio_to_mono,
     first_str,
     image_tensor_to_data_uri,
@@ -1836,6 +1837,26 @@ io.Boolean.Input(
         # drop the cost payload with it - so the two are merged before that test
         replay = feed.ui()
         replay.update(ledger.ui())
+        # why each media socket is empty, in the words of the widget that decided it
+        no_images = (
+            f"'image_provider' is '{image_provider}'" if not wants_images
+            else "every start-frame render failed"
+        )
+        no_sheets = (
+            no_images if not wants_images
+            else "'render_subject_sheets' is off" if not render_subject_sheets
+            else "no subjects were defined"
+        )
+        no_videos = (
+            f"'video_provider' is '{video_provider}'" if not wants_video
+            else "every clip failed"
+        )
+        no_film = (
+            no_videos if not wants_video
+            else "'concat_video' is off" if not concat_video
+            else "the clips could not be joined"
+        )
+
         return io.NodeOutput(
             pipe_module.pack(
                 image_prompts_start=start_frames,
@@ -1852,11 +1873,15 @@ io.Boolean.Input(
                 analysis_json=analysis_json,
                 audio_clips=audio_clips,
             ),
-            audio_clips,
-            images_out,
-            subject_images_out,
-            videos_out,
-            final_video,
+            # An empty list wired anywhere crashes ComfyUI's list expansion with a bare
+            # IndexError; a blocker skips whatever hangs off that socket instead, and
+            # says in the log why. The pipe keeps the real (empty) lists - the expander
+            # blocks per field, at the point one would actually be wired.
+            blocked_when_empty(audio_clips, "audio_clips", "the run produced no shots"),
+            blocked_when_empty(images_out, "images", no_images),
+            blocked_when_empty(subject_images_out, "subject_images", no_sheets),
+            blocked_when_empty(videos_out, "videos", no_videos),
+            blocked_when_empty(final_video, "final_video", no_film),
             ui=replay or None,
         )
 

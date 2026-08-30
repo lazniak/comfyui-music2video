@@ -141,3 +141,19 @@ def test_the_clips_are_reachable_both_ways():
     expanded = [output.display_name for output in expander().define_schema().outputs]
     assert "audio_clips" in produced and "audio_clips" in expanded
 
+
+def test_an_empty_field_blocks_its_own_socket_and_leaves_the_rest_alone():
+    """One empty list must not take the whole graph down with an IndexError."""
+    pytest.importorskip("comfy_execution.graph_utils", reason="needs a ComfyUI installation")
+    from comfy_execution.graph_utils import ExecutionBlocker
+
+    packed = pipe_module.pack(shot_index=[1, 2], transcript="")
+    result = expander().execute(packed)
+    got = dict(zip(pipe_module.NAMES, result.args[1:]))
+
+    assert result.args[0] is packed, "the pipe itself is never blocked"
+    assert got["shot_index"] == [1, 2], "a field with content is handed straight back"
+    assert isinstance(got["durations"][0], ExecutionBlocker), "an empty list is blocked"
+    assert got["transcript"] == "", "an empty string breaks nothing downstream - leave it"
+    assert packed["durations"] == [], "the pipe keeps the real value; only the socket is blocked"
+

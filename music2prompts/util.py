@@ -29,6 +29,33 @@ def warn(message: str) -> None:
     LOGGER.warning("%s %s", PREFIX, message)
 
 
+def blocked_when_empty(value: Any, what: str = "", why: str = "") -> Any:
+    """Hand back ``value``, or a silent execution blocker when there is nothing in it.
+
+    ComfyUI slices every input once per downstream execution::
+
+        return {k: v[i if len(v) > i else -1] for k, v in d.items()}   # execution.py
+
+    An empty list therefore falls through to ``v[-1]`` and raises ``IndexError`` deep
+    inside the executor, with a traceback that names neither the node nor the wire that
+    caused it. A ``None``-message blocker skips the node downstream instead, which is
+    what "this run produced none of these" should do - the rest of the graph still runs
+    and the prompts still come out.
+
+    Outside ComfyUI (tests, tooling) there is nothing to block with, so the value is
+    returned untouched.
+    """
+    if value:
+        return value
+    try:
+        from comfy_execution.graph_utils import ExecutionBlocker
+    except ImportError:  # pragma: no cover - only outside a ComfyUI install
+        return value
+    if what:
+        warn(f"'{what}' is empty{f' ({why})' if why else ''} - nodes wired to it are skipped.")
+    return ExecutionBlocker(None) if not isinstance(value, list) else [ExecutionBlocker(None)]
+
+
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
