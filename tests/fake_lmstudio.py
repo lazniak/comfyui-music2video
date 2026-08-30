@@ -36,6 +36,9 @@ class FakeClient:
     def unload(self, *args, **kwargs):
         return None
 
+    def wait_unloaded(self, *args, **kwargs):
+        return True
+
     def chat_json(self, model, system, user, schema=None, images=None, stage="stage", **kwargs):
         self.calls.append(stage)
         properties = (schema or {}).get("properties", {})

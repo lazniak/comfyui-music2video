@@ -24,6 +24,16 @@ as that version's release notes, so keep the heading format `## <version>`.
   there can write outside the output folder.
 - Fixed: the main node's `final_audio` = `mix` was not given the track, so it silently
   fell back to the clips' own audio.
+- **Memory is handed back at the end of a run**, so the sampler or video model that runs
+  next in the graph can have the card. `lm_unload_after` now defaults to **on** and waits
+  until LM Studio reports the model gone; `whisper_keep_loaded` defaults to **off**; and
+  the caching allocator is emptied on the way out, because a freed model whose blocks are
+  still reserved is memory ComfyUI cannot see.
+- Fixed: the LM Studio load request sent `context_length` nested under `config`, which
+  that API rejects with HTTP 400. The run then fell back to loading the model at whatever
+  context LM Studio defaults to, silently, and long prompts were truncated for the rest of
+  the run. It is now sent where the API looks for it, and a context smaller than the one
+  asked for is reported.
 
 ## 1.1.0
 

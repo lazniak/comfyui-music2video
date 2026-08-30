@@ -285,6 +285,30 @@ even then nothing is overwritten.
 > `free_lmstudio_vram` (on by default) unloads the LM Studio model before Whisper runs, because one
 > 11 GB card cannot hold both. `whisper-large-v3-turbo` is much lighter if you prefer speed.
 
+### Handing the card back
+
+A graph that renders after this node needs the whole card, and the error it gets when it
+cannot have it — `Allocation on device 0 would exceed allowed memory` — names neither this
+node nor the model still sitting there. So, in order, a run:
+
+1. unloads ComfyUI's own models (`free_comfy_vram`) and the LM Studio model
+   (`free_lmstudio_vram`) **before** Whisper loads;
+2. drops the Whisper pipeline as soon as the transcript is out, unless
+   `whisper_keep_loaded` is on — it is **off** by default, because large-v3 holds ~2.9 GB;
+3. unloads the LM Studio model once the prompts are written (`lm_unload_after`, **on** by
+   default) and waits until LM Studio reports it gone, so the memory is really back;
+4. empties the caching allocator on the way out — freeing a model is not enough, the
+   blocks stay reserved and ComfyUI cannot use what it cannot see.
+
+Two things this node cannot do for you:
+
+* **Pick a model that fits.** A 27B LLM on an 11 GB card is mostly running on the CPU: the
+  writing stages take ten minutes instead of one, and LM Studio may hold VRAM the whole
+  time. An 8–14B local model, or `llm_provider = openrouter` for a few cents a run, is the
+  single biggest speed-up available here.
+* **Control LM Studio's own idle behaviour.** Set a JIT TTL there if you want it to let go
+  without being asked.
+
 **Cloud keys & rendering** — `openrouter_api_key`, `openai_api_key`, `anthropic_api_key`,
 `fal_api_key` (all empty = read from the environment), `video_prompt_source` (`i2va` / `ref2va`),
 `render_subject_sheets`, `style_anchor`, `lipsync_audio`, `prompt_expansion`, `live_preview`,

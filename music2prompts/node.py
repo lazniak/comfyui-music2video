@@ -537,11 +537,14 @@ class Music2PromptsLM(io.ComfyNode):
                     ),
                 ),
                 io.Boolean.Input(
-                    "lm_unload_after", default=False, advanced=True,
+                    "lm_unload_after", default=True, advanced=True,
                     tooltip=(
                         "Unload the model from LM Studio once the prompts are written, before "
-                        "any image or video rendering starts - frees the VRAM for the rest of "
-                        "the workflow at the cost of a load on the next run. lmstudio only: "
+                        "any image or video rendering starts, and wait until LM Studio reports "
+                        "it gone so the VRAM is really back. On by default: a local LLM left "
+                        "resident is the usual reason the sampler or the video model that runs "
+                        "next cannot find room. Turn it off to keep the model warm when this "
+                        "node is the only thing in the graph. lmstudio only: "
                         "the cloud clients' unload is a no-op."
                     ),
                 ),
@@ -947,11 +950,14 @@ class Music2PromptsLM(io.ComfyNode):
                     ),
                 ),
                 io.Boolean.Input(
-                    "whisper_keep_loaded", default=True, advanced=True,
+                    "whisper_keep_loaded", default=False, advanced=True,
                     tooltip=(
                         "Keep the Whisper pipeline in memory after the run - keyed by model, "
                         "device and dtype - so the next queue does not reload several GB from "
-                        "disk. Off unloads it and empties the CUDA cache as soon as the "
+                        "disk. Off by default, because large-v3 holds about 3 GB and the "
+                        "samplers downstream usually want the whole card; turn it on when you "
+                        "run this node repeatedly and have the headroom. Off unloads it and "
+                        "empties the CUDA cache as soon as the "
                         "transcript is done, freeing that VRAM for the rest of the workflow at "
                         "the price of a full reload next time. Only one pipeline is cached, so "
                         "changing 'whisper_model', 'whisper_device' or 'whisper_dtype' "
@@ -1321,7 +1327,7 @@ io.Boolean.Input(
         lm_auto_download: bool = True,
         lm_auto_load: bool = True,
         lm_context_length: int = 32768,
-        lm_unload_after: bool = False,
+        lm_unload_after: bool = True,
         lm_temperature: float = 0.8,
         lm_max_tokens: int = 4096,
         lm_timeout: int = 300,
@@ -1336,7 +1342,7 @@ io.Boolean.Input(
         whisper_batch_size: int = 1,
         whisper_word_timestamps: bool = True,
         whisper_window_seconds: float = 30.0,
-        whisper_keep_loaded: bool = True,
+        whisper_keep_loaded: bool = False,
         whisper_skip: bool = False,
         free_comfy_vram: bool = True,
         free_lmstudio_vram: bool = True,
@@ -1532,7 +1538,9 @@ io.Boolean.Input(
         reference_prompts = runner.reference_prompts(subjects, art, aspect_ratio)
 
         if lm_unload_after and local_llm:
+            log(f"unloading '{model_key}' from LM Studio - the rest of the graph needs the VRAM")
             client.unload(model_key)
+            client.wait_unloaded(model_key)
 
         # ---------------------------------------------------------- assembly
         lyrics_language = transcription.get("language") or "English"
@@ -1874,6 +1882,9 @@ io.Boolean.Input(
                 folder,
             )
 
+        # whatever loads next in the graph sees the memory only once the caching
+        # allocator gives its blocks back, so do that on the way out, always
+        asr_module.release_cache()
         log(f"done in {time.perf_counter() - started:.1f}s - {len(slots)} shots, {len(subject_names)} subjects")
         ledger.publish(final=True)
         # feed.ui() is {} whenever nothing was previewed, and `or None` below would then

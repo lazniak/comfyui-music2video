@@ -286,12 +286,26 @@ class LMStudioClient:
         warn(f"download of '{model_key}' did not report completion in time; continuing.")
 
     def load(self, model_key: str, context_length: int = 32768) -> None:
-        payload = {"model": model_key, "config": {"context_length": int(context_length)}}
+        # context_length is a top-level field on this endpoint; nesting it under "config"
+        # is rejected with "Unrecognized key(s)", and the retry below then silently loads
+        # the model at whatever context LM Studio defaults to.
+        payload = {
+            "model": model_key,
+            "context_length": int(context_length),
+            "echo_load_config": True,  # so the log can say what was actually applied
+        }
         try:
-            self._request("POST", "/api/v1/models/load", payload, timeout=max(120, self.timeout))
+            body = self._request("POST", "/api/v1/models/load", payload, timeout=max(120, self.timeout))
+            applied = (body or {}).get("load_config") or {}
+            got = applied.get("context_length")
+            if got and int(got) < int(context_length):
+                warn(
+                    f"asked LM Studio for a context of {context_length} but it loaded "
+                    f"'{model_key}' at {got}; long prompts will be truncated."
+                )
             return
         except LMStudioError as exc:
-            warn(f"load with context config failed ({exc}); retrying without config")
+            warn(f"load with a context length failed ({exc}); retrying without one")
         try:
             self._request("POST", "/api/v1/models/load", {"model": model_key}, timeout=max(120, self.timeout))
         except LMStudioError as exc:
@@ -318,6 +332,29 @@ class LMStudioClient:
                 self._request("POST", "/api/v1/models/unload", {"instance_id": instance}, timeout=60)
             except LMStudioError as exc:
                 warn(f"could not unload '{instance}': {exc}")
+
+    def wait_unloaded(self, model_key: str, timeout: float = 20.0) -> bool:
+        """Block until LM Studio reports the model gone, so the VRAM is really back.
+
+        The unload call returns as soon as it is accepted, but whatever runs next in the
+        graph needs the memory *now*. Returns False on a timeout rather than raising: a
+        model that lingers is a warning, not a reason to fail a finished run.
+        """
+        deadline = time.time() + max(0.0, timeout)
+        while True:
+            try:
+                still = any(model.key == model_key and model.loaded for model in self.list_models())
+            except Exception:
+                return True  # cannot ask; assume it went, the caller only logs either way
+            if not still:
+                return True
+            if time.time() >= deadline:
+                warn(
+                    f"LM Studio still reports '{model_key}' loaded {timeout:.0f}s after the "
+                    "unload; its VRAM is not back yet."
+                )
+                return False
+            time.sleep(0.5)
 
     # ------------------------------------------------------------------ inference
 

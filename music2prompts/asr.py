@@ -132,6 +132,30 @@ def _build_pipeline(model_path: str, device: str, dtype: str, keep_loaded: bool)
     return asr
 
 
+def release_cache() -> None:
+    """Hand PyTorch's cached blocks back to the driver.
+
+    Freeing a model is not enough: the caching allocator keeps the blocks reserved, and
+    ComfyUI's model manager cannot see or use memory that is reserved but unallocated.
+    Whatever loads next in the graph does, which is the difference between a checkpoint
+    fitting and an out-of-memory error.
+    """
+    try:
+        import comfy.model_management as mm  # type: ignore
+
+        mm.soft_empty_cache()
+        return
+    except Exception:
+        pass
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # pragma: no cover - no torch, nothing to release
+        pass
+
+
 def unload_all() -> None:
     _PIPELINE_CACHE.clear()
     try:
