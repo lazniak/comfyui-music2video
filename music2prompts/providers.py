@@ -245,7 +245,7 @@ class OpenAICompatClient(_CloudClient):
             "Authorization": f"Bearer {self.api_key}",
         }
         if self.name == "openrouter":
-            headers["X-Title"] = "ComfyUI Music2Prompts"
+            headers["X-Title"] = "ComfyUI Music2Video"
             headers["HTTP-Referer"] = "https://github.com/lazniak/comfyui-ultimate-node"
         return headers
 

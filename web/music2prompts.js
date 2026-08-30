@@ -1,5 +1,5 @@
 /**
- * Music2Prompts - node-side behaviour for the provider widgets.
+ * Music2Video - node-side behaviour for the provider widgets.
  *
  * Two jobs, both deliberately small:
  *
@@ -73,7 +73,7 @@ async function fetchLists(force = false) {
       return cache;
     })
     .catch((error) => {
-      console.warn("[Music2Prompts] could not refresh model lists:", error);
+      console.warn("[Music2Video] could not refresh model lists:", error);
       inFlight = null;
       return cache;
     });
@@ -180,7 +180,7 @@ app.registerExtension({
       const colours = canvas?.link_type_colors ?? window.LGraphCanvas?.link_type_colors;
       if (colours && !colours[PIPE_TYPE]) colours[PIPE_TYPE] = "#d4a05a";
     } catch (error) {
-      console.warn("[Music2Prompts] could not colour the pipe link:", error);
+      console.warn("[Music2Video] could not colour the pipe link:", error);
     }
   },
 
@@ -213,7 +213,7 @@ app.registerExtension({
         return result;
       };
     } catch (error) {
-      console.warn("[Music2Prompts] node behaviour disabled:", error);
+      console.warn("[Music2Video] node behaviour disabled:", error);
     }
   },
 });

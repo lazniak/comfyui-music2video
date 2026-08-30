@@ -1,4 +1,4 @@
-"""ComfyUI entry point for the Music2Prompts node pack (V3 schema).
+"""ComfyUI entry point for the Music2Video node pack (V3 schema).
 
 Imports of ``comfy_api`` happen inside ``comfy_entrypoint`` so this module can
 also be imported outside ComfyUI (tests, tooling) without blowing up.
@@ -6,7 +6,7 @@ also be imported outside ComfyUI (tests, tooling) without blowing up.
 
 from __future__ import annotations
 
-__version__ = "0.4.0"
+__version__ = "1.0.0"
 
 # served to the browser: hides the widgets of providers you did not select, refreshes
 # the model dropdowns from the route registered below, and shows each rendered image
@@ -33,7 +33,7 @@ def _bootstrap() -> None:
         import logging
 
         logging.getLogger("music2prompts").warning(
-            "[Music2Prompts] startup hook failed (%s); the node still works, "
+            "[Music2Video] startup hook failed (%s); the node still works, "
             "but the model dropdowns will only show their static fallbacks",
             exc,
         )
@@ -47,7 +47,7 @@ async def comfy_entrypoint():
         from comfy_api.latest import ComfyExtension, io
     except ImportError as exc:  # pragma: no cover - only on very old ComfyUI
         raise ImportError(
-            "[Music2Prompts] requires the ComfyUI V3 node API (comfy_api.latest). "
+            "[Music2Video] requires the ComfyUI V3 node API (comfy_api.latest). "
             "Update ComfyUI to a recent version and restart."
         ) from exc
 

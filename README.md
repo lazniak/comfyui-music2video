@@ -1,4 +1,8 @@
-# Music → Prompts (LM Studio + Whisper) — ComfyUI node
+<p align="center">
+  <img src="assets/banner.png" alt="Music2Video" width="900">
+</p>
+
+# Music2Video
 
 Turns an audio track into **ready-to-use generation prompts** — and, if you want, into the images,
 the clips, and the finished cut-together film. One node in; the prompts and timings come out on one pipe, the media on their own sockets.
@@ -21,14 +25,36 @@ Built on the ComfyUI **V3 node schema**, so the 30+ secondary settings collapse 
 
 ---
 
+## Install
+
+**ComfyUI-Manager** — search for **Music2Video**, hit Install, restart.
+
+**comfy-cli**
+
+```bash
+comfy node install music2video
+```
+
+**By hand**
+
+```bash
+git clone https://github.com/lazniak/comfyui-ultimate-node ComfyUI/custom_nodes/music2video
+```
+
+Registry page: [registry.comfy.org/nodes/music2video](https://registry.comfy.org/nodes/music2video).
+Needs **ComfyUI ≥ 0.3.48** — the first release carrying the V3 node schema
+(`comfy_api.latest`) the pack is built on. Nothing else beyond a normal ComfyUI install.
+
+---
+
 ## Quick start (PL)
 
 1. Odpal LM Studio → *Developer* → **Start Server** (domyślnie `http://127.0.0.1:1234`).
 2. Skopiuj / zlinkuj ten katalog do `ComfyUI/custom_nodes/` i zrestartuj ComfyUI.
-3. Dodaj node **🎵 Music → Prompts (LM Studio + Whisper)**, podłącz `LoadAudio`, wpisz brief.
+3. Dodaj node **🎵 Music2Video**, podłącz `LoadAudio`, wpisz brief.
 4. Pierwsze uruchomienie ściąga Whisper large-v3 (~3 GB) do `ComfyUI/models/whisper/`.
 5. Wszystkie teksty i liczby wychodzą jednym kablem `pipe`. Dodaj node
-   **🎵 Music2Prompts Pipe Expand**, podłącz do niego `pipe`, i tam masz osobne wyjścia:
+   **🎵 Music2Video Pipe Expand**, podłącz do niego `pipe`, i tam masz osobne wyjścia:
    `image_prompts_start` do enkodera tekstu, `video_prompts_i2va` / `video_prompts_ref2va`
    do node'a MiniMax H3. Media (`images`, `videos`, `final_video`, `audio_clips`) zostają
    jako własne gniazda na głównym node'zie.
@@ -36,7 +62,7 @@ Built on the ComfyUI **V3 node schema**, so the 30+ secondary settings collapse 
 Instalacja przez junction (Windows, bez kopiowania):
 
 ```bash
-cmd /c mklink /J "D:\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI\custom_nodes\comfyui-music2prompts" "D:\code\comfyui-ultimate-node"
+cmd /c mklink /J "D:\Comfy-Desktop\ComfyUI-Installs\ComfyUI\ComfyUI\custom_nodes\music2video" "D:\code\comfyui-ultimate-node"
 ```
 
 ---
@@ -263,7 +289,7 @@ The node has six sockets. Every text and number leaves on one of them.
 ### The pipe, and taking it apart
 
 Twelve string and number sockets on one node was a wall of noodles, and they almost always
-travel together. They now leave as one `pipe`; **🎵 Music2Prompts Pipe Expand** hands them
+travel together. They now leave as one `pipe`; **🎵 Music2Video Pipe Expand** hands them
 back wherever one is actually needed. That node also passes the pipe straight through, so
 several can sit along one wire — expand next to the sampler for the prompts, again next to
 a text preview for the transcript. It calls nothing and costs nothing.
@@ -295,7 +321,7 @@ Everything in the pipe except `transcript` and `analysis_json` is a **list**.
 
 ### Wiring examples
 
-All of these start with `pipe` → **Music2Prompts Pipe Expand**; the field names below are
+All of these start with `pipe` → **Music2Video Pipe Expand**; the field names below are
 that node's outputs.
 
 * **Start frames** → `image_prompts_start` into a text encoder, `negative_prompts` into the negative

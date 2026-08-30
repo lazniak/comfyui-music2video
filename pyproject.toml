@@ -1,10 +1,22 @@
 [project]
-name = "comfyui-music2prompts"
-version = "0.1.0"
-description = "Turn a music track into image prompts and MiniMax H3 video prompts, fully locally (LM Studio + Whisper large-v3 + librosa). Generates no images or video."
+# Registry node id - immutable once published, used by `comfy node install music2video`
+# and in the URL https://registry.comfy.org/nodes/music2video
+name = "music2video"
+version = "1.0.0"
+description = """\
+Turn a track into a finished music video inside ComfyUI. Whisper large-v3 transcribes the lyrics \
+with word-level timing, librosa (or a built-in numpy/scipy fallback) finds the BPM, the beat grid \
+and the sections, and a local LM Studio model - or OpenRouter, OpenAI, Anthropic - writes the \
+treatment, the art direction, a recurring-subject bible and every shot. Out come start-frame image \
+prompts, MiniMax H3 image-to-video and reference-to-video prompts in their exact six-section \
+format, negatives, per-shot timings and sample-accurate AUDIO slices for lipsync. It can render \
+the frames and the clips through fal.ai or OpenRouter, then cut every clip to its shot on the beat \
+with PyAV and mux the original music back in. A live gallery shows each frame and clip in the node \
+as it lands, and a cost meter reports in USD what every model actually billed. The analysis is \
+always local and free; nothing is rendered until you pick a provider."""
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
-license = { text = "MIT" }
 dependencies = [
     "requests",
     "numpy",
@@ -12,17 +24,30 @@ dependencies = [
     "transformers",
     "huggingface_hub",
 ]
+classifiers = [
+    "Operating System :: OS Independent",
+    # Whisper runs on CUDA when torch reports a device, otherwise on the CPU;
+    # there is no accelerator-specific code beyond that.
+    "Environment :: GPU :: NVIDIA CUDA",
+]
 
 [project.optional-dependencies]
+# Better beat and section detection. Without it the node uses its own numpy/scipy DSP.
 better-dsp = ["librosa"]
 
 [project.urls]
-Repository = "https://github.com/lazniak/comfyui-music2prompts"
+Repository = "https://github.com/lazniak/comfyui-ultimate-node"
+Documentation = "https://github.com/lazniak/comfyui-ultimate-node#readme"
+"Bug Tracker" = "https://github.com/lazniak/comfyui-ultimate-node/issues"
 
 [tool.comfy]
 PublisherId = "lazniak"
-DisplayName = "Music → Prompts (LM Studio + Whisper)"
-Icon = ""
+DisplayName = "Music2Video"
+Icon = "https://raw.githubusercontent.com/lazniak/comfyui-ultimate-node/main/assets/icon.png"
+Banner = "https://raw.githubusercontent.com/lazniak/comfyui-ultimate-node/main/assets/banner.png"
+# comfy_api.latest (the V3 node schema, ComfyExtension, io.Custom and output tooltips)
+# first shipped in ComfyUI v0.3.48; the pack cannot load on anything older.
+requires-comfyui = ">=0.3.48"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

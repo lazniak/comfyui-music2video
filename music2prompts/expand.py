@@ -22,16 +22,16 @@ KINDS = {"String": io.String, "Int": io.Int, "Float": io.Float, "Audio": io.Audi
 
 
 class Music2PromptsPipeExpand(io.ComfyNode):
-    """Unpack a Music2Prompts pipe into its individual outputs."""
+    """Unpack a Music2Video pipe into its individual outputs."""
 
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="Music2PromptsPipeExpand",
-            display_name="🎵 Music2Prompts Pipe Expand",
-            category="Music2Prompts",
+            display_name="🎵 Music2Video Pipe Expand",
+            category="Music2Video",
             description=(
-                "Splits the pipe from the Music2Prompts node back into the prompts, the "
+                "Splits the pipe from the Music2Video node back into the prompts, the "
                 "subject names, the shot timings, the transcript and the analysis JSON. "
                 "The pipe is passed through as well, so several of these can sit along one "
                 "wire. Costs nothing and calls nothing - it only unpacks what the run "
@@ -41,7 +41,7 @@ class Music2PromptsPipeExpand(io.ComfyNode):
                 io.Custom(pipe_module.PIPE_TYPE).Input(
                     "pipe",
                     tooltip=(
-                        "The 'pipe' output of the Music2Prompts node. Every field is always "
+                        "The 'pipe' output of the Music2Video node. Every field is always "
                         "present in it, so an output here is empty only when that part of "
                         "the run produced nothing."
                     ),
@@ -71,7 +71,7 @@ class Music2PromptsPipeExpand(io.ComfyNode):
         # a plain TypeError here would surface as a bare traceback; name the likely mistake
         if not isinstance(pipe, dict):
             raise ValueError(
-                f"{PREFIX} the 'pipe' input takes the pipe output of the Music2Prompts node, "
+                f"{PREFIX} the 'pipe' input takes the pipe output of the Music2Video node, "
                 f"not a {type(pipe).__name__}."
             )
         return io.NodeOutput(pipe, *pipe_module.unpack(pipe))

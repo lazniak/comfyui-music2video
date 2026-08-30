@@ -58,7 +58,7 @@ def test_a_pipe_from_an_older_version_expands_minus_what_it_never_held():
 
 
 def test_something_that_is_not_a_pipe_says_so_rather_than_raising_a_key_error():
-    with pytest.raises(TypeError, match="Music2Prompts node"):
+    with pytest.raises(TypeError, match="Music2Video node"):
         pipe_module.unpack(["a", "b"])
 
 
@@ -106,7 +106,7 @@ def test_the_pipe_is_handed_through_so_a_chain_can_tap_it_more_than_once():
 
 
 def test_wiring_the_wrong_thing_into_the_expander_names_the_mistake():
-    with pytest.raises(ValueError, match="pipe output of the Music2Prompts node"):
+    with pytest.raises(ValueError, match="pipe output of the Music2Video node"):
         expander().execute("not a pipe")
 
 

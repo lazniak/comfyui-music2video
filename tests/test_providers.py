@@ -162,7 +162,7 @@ def test_openrouter_sends_effort_when_asked():
     seen = capture(client, openai_reply())
     client.chat_json("anthropic/claude-sonnet-5", "sys", "user", reasoning_effort="medium")
     assert seen["payload"]["reasoning_effort"] == "medium"
-    assert client._headers()["X-Title"] == "ComfyUI Music2Prompts"
+    assert client._headers()["X-Title"] == "ComfyUI Music2Video"
 
 
 def test_empty_reply_raises():

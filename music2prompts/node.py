@@ -1,4 +1,4 @@
-"""The Music2Prompts node: audio in, prompts out - and, optionally, rendered media."""
+"""The Music2Video node: audio in, prompts out - and, optionally, rendered media."""
 
 from __future__ import annotations
 
@@ -74,15 +74,24 @@ class Music2PromptsLM(io.ComfyNode):
         options = _schema_options()
         return io.Schema(
             node_id="Music2PromptsLM",
-            display_name="🎵 Music → Prompts (LM Studio + Whisper)",
-            category="Music2Prompts",
+            display_name="🎵 Music2Video",
+            category="Music2Video",
             description=(
-                "Analyses an audio track locally (Whisper large-v3 + librosa), directs it with an LLM "
-                "(LM Studio by default, or OpenRouter / OpenAI / Anthropic) and returns ready-to-use "
-                "prompts: start-frame image prompts, subject reference prompts and MiniMax H3 video "
-                "prompts (I2VA and Ref2VA), plus shot timings and per-shot audio for lipsync. "
-                "Image and video rendering through fal.ai or OpenRouter is optional and off by default - "
-                "those providers bill per call."
+                "One node from a track to a finished film. It transcribes the lyrics with word-level "
+                "timing (Whisper large-v3) and reads the BPM, the beat grid and the sections "
+                "(librosa, or a built-in numpy/scipy fallback), then has an LLM - LM Studio locally by "
+                "default, or OpenRouter / OpenAI / Anthropic - write the treatment, the art direction, "
+                "a bible of the recurring subjects and every shot, with the cuts snapped to the beat.\n\n"
+                "Out come start-frame image prompts, subject reference-sheet prompts, MiniMax H3 video "
+                "prompts (I2VA and Ref2VA, in their exact six-section format), negatives, per-shot "
+                "timings and sample-accurate audio slices for lipsync - all on one 'pipe', which "
+                "'Music2Video Pipe Expand' takes apart wherever a value is needed.\n\n"
+                "It can also render: start frames and clips through fal.ai or OpenRouter, then every "
+                "clip trimmed to its shot and cut together under the original music with PyAV. Each "
+                "frame and clip appears in the node as it lands, and the cost meter below the gallery "
+                "reports in USD what every model actually billed.\n\n"
+                "The analysis is always local and free. Rendering is off until you pick a provider, "
+                "because those providers bill per call."
             ),
             inputs=[
                 io.Audio.Input(
@@ -1133,7 +1142,7 @@ io.Boolean.Input(
                         "start-frame and reference image prompts, the subject names, both "
                         "MiniMax H3 prompt forms, the negatives, and every shot's index, "
                         "start, end and duration, plus the transcript and the full analysis "
-                        "JSON. Feed it to 'Music2Prompts Pipe Expand' wherever you need one "
+                        "JSON. Feed it to 'Music2Video Pipe Expand' wherever you need one "
                         "of them as its own socket; that node passes the pipe through, so it "
                         "can be tapped as many times as you like along a chain. Only the "
                         "media stays on its own sockets here, because an IMAGE or a VIDEO "

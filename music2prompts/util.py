@@ -1,4 +1,4 @@
-"""Small helpers shared across the Music2Prompts node.
+"""Small helpers shared across the Music2Video node.
 
 Heavy third-party imports (numpy, torch, librosa) stay inside functions so that
 importing this package never breaks ComfyUI startup and so the pure-python
@@ -18,7 +18,7 @@ LOGGER = logging.getLogger("music2prompts")
 if not LOGGER.handlers:
     LOGGER.setLevel(logging.INFO)
 
-PREFIX = "[Music2Prompts]"
+PREFIX = "[Music2Video]"
 
 
 def log(message: str) -> None:

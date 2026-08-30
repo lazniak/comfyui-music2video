@@ -1,5 +1,5 @@
 /**
- * Music2Prompts - the live gallery inside the node.
+ * Music2Video - the live gallery inside the node.
  *
  * A render is slow and paid for per shot, so the node shows each image and clip the
  * moment it lands instead of at the end of the batch. The backend writes every result
@@ -603,7 +603,7 @@ app.registerExtension({
         return onRemoved?.apply(this, arguments);
       };
     } catch (error) {
-      console.warn("[Music2Prompts] gallery disabled:", error);
+      console.warn("[Music2Video] gallery disabled:", error);
     }
   },
 });

@@ -797,7 +797,7 @@ class OpenRouterMediaClient:
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "X-Title": "ComfyUI Music2Prompts",
+            "X-Title": "ComfyUI Music2Video",
         }
 
     def _record(self, model: str, kind: str, body: dict, label: str, outcome: str = "ok") -> None:

@@ -2,7 +2,7 @@
 
 Seventeen sockets on one node is a wall of noodles, and twelve of them were strings and
 numbers that almost always travel together. They now leave as one ``M2P_PIPE`` value - a
-plain dict - and the *Music2Prompts Pipe Expand* node hands them back individually
+plain dict - and the *Music2Video Pipe Expand* node hands them back individually
 wherever they are actually needed. The media outputs stay as sockets: an IMAGE or a VIDEO
 is normally wired straight into a preview or a save node, so hiding them behind an
 expander would cost a node and buy nothing.
@@ -213,7 +213,7 @@ def unpack(pipe) -> tuple:
     """
     if not isinstance(pipe, dict):
         raise TypeError(
-            "this input takes the pipe from the Music2Prompts node, not a "
+            "this input takes the pipe from the Music2Video node, not a "
             f"{type(pipe).__name__}"
         )
     return tuple(pipe.get(field.name, [] if field.is_list else "") for field in FIELDS)

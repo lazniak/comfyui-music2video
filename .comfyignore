@@ -1,0 +1,5 @@
+# Kept in git, but of no use to someone installing the node.
+# Same syntax as .gitignore; files git already ignores are excluded anyway.
+tests/
+.pytest_cache/
+*.log

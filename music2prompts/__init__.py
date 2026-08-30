@@ -1,4 +1,4 @@
-"""Music2Prompts - local audio-to-prompt conversion for ComfyUI.
+"""Music2Video - local audio-to-prompt conversion for ComfyUI.
 
 The package deliberately keeps heavy imports out of module scope so the pure
 formatting/timing modules can be imported (and tested) without torch, librosa
