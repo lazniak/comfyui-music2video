@@ -21,7 +21,7 @@ from comfy_api.latest import io
 from . import pipe as pipe_module
 from . import render as render_module
 from . import video as video_module
-from .util import PREFIX, log, warn
+from .util import PREFIX, log, raise_if_interrupted, warn
 
 #: what the widget says -> what the muxer calls it
 AUDIO_SOURCES = {
@@ -49,6 +49,7 @@ def _materialise(videos: list) -> tuple[list[str], list[str]]:
     paths: list[str] = []
     temporary: list[str] = []
     for index, item in enumerate(videos):
+        raise_if_interrupted()  # writing a clip out is a real wait, once per clip
         if item is None:
             continue
         source = None

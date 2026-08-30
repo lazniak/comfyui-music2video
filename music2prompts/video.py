@@ -25,7 +25,7 @@ from collections import Counter
 from fractions import Fraction
 from typing import Any, Callable, Sequence
 
-from .util import PREFIX, log, warn
+from .util import PREFIX, log, raise_if_interrupted, warn
 
 # av.codec.Codec("aac", "w").audio_rates - anything else makes the encoder fail to open
 AAC_RATES = (96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
@@ -253,6 +253,7 @@ def concat_clips(  # noqa: PLR0912, PLR0915 - one linear muxing pass, kept in on
     written = 0
     try:
         for index, info in enumerate(infos):
+            raise_if_interrupted()  # a long film is minutes of muxing
             target = budgets[index] if index < len(budgets) else None
             emitted, held = _write_clip(
                 container, video, info, width, height, fit, interpolation, rate, step,

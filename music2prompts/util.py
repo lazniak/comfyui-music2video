@@ -12,7 +12,7 @@ import io as _io
 import json
 import logging
 import re
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Callable, Iterable, Iterator, Sequence
 
 LOGGER = logging.getLogger("music2prompts")
 if not LOGGER.handlers:
@@ -54,6 +54,103 @@ def blocked_when_empty(value: Any, what: str = "", why: str = "") -> Any:
     if what:
         warn(f"'{what}' is empty{f' ({why})' if why else ''} - nodes wired to it are skipped.")
     return ExecutionBlocker(None) if not isinstance(value, list) else [ExecutionBlocker(None)]
+
+
+# --------------------------------------------------------------------------- cancelling
+
+
+_MODEL_MANAGEMENT: Any = None
+
+
+def _model_management() -> Any:
+    """``comfy.model_management``, or None when there is nothing to ask.
+
+    Outside ComfyUI the import fails, and it can fail with more than ImportError - a
+    headless rig with a CPU-only torch raises out of the module's own top level. The
+    answer is remembered either way: this is called from loops that run per token.
+    """
+    global _MODEL_MANAGEMENT
+    if _MODEL_MANAGEMENT is None:
+        try:
+            import comfy.model_management as mm  # type: ignore
+
+            _MODEL_MANAGEMENT = mm
+        except Exception:  # pragma: no cover - only outside a working ComfyUI
+            _MODEL_MANAGEMENT = False
+    return _MODEL_MANAGEMENT or None
+
+
+def interrupted() -> bool:
+    """Has Cancel been pressed? Asks the flag; never clears it."""
+    mm = _model_management()
+    if mm is None:
+        return False
+    try:
+        return bool(mm.processing_interrupted())
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def raise_if_interrupted() -> None:
+    """Stop the run here if Cancel was pressed.
+
+    ComfyUI's own ``throw_exception_if_processing_interrupted()`` clears the flag on its
+    way out, which is wrong for this node: it renders and polls on several threads at
+    once, and the first one to notice a cancel would hide it from all the others. The
+    executor resets the flag itself at the start of every prompt
+    (``execution.py``: ``nodes.interrupt_processing(False)``), so leaving it set costs
+    nothing and is what makes a fan-out stop as one.
+
+    ``InterruptProcessingException`` derives from ``BaseException``, so it travels up
+    through every ``except Exception`` between here and the executor untouched - the
+    retry ladders in this pack keep catching failures without catching the cancel.
+    """
+    mm = _model_management()
+    if mm is not None and mm.processing_interrupted():
+        raise mm.InterruptProcessingException()
+
+
+def sleep_unless_interrupted(seconds: float, slice_seconds: float = 0.25) -> None:
+    """``time.sleep``, but Cancel gets a word in four times a second."""
+    import time
+
+    deadline = time.time() + max(0.0, float(seconds))
+    while True:
+        raise_if_interrupted()
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return
+        time.sleep(min(max(0.01, float(slice_seconds)), remaining))
+
+
+def run_cancellable(work: Callable[[], Any], poll_seconds: float = 0.2) -> Any:
+    """Run a blocking call on a worker thread so a cancel need not wait for it.
+
+    A local 27B model spends a minute or two on one stage and ``requests`` offers no way
+    to abort a request already in flight. The call is left to finish into a result nobody
+    reads; what matters is that the node stops now. The LLM stops too, a moment later:
+    cancelling unloads the model, which ends the generation at the far end.
+    """
+    import threading
+
+    box: dict[str, Any] = {}
+    done = threading.Event()
+
+    def runner() -> None:
+        try:
+            box["value"] = work()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the calling thread
+            box["error"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=runner, name="music2video-call", daemon=True)
+    thread.start()
+    while not done.wait(max(0.01, float(poll_seconds))):
+        raise_if_interrupted()
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 
 def clamp(value: float, low: float, high: float) -> float:

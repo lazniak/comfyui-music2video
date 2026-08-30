@@ -5,6 +5,15 @@ as that version's release notes, so keep the heading format `## <version>`.
 
 ## 1.2.0
 
+- **Cancel stops the run now**, instead of at the end of whatever was running. Whisper is
+  given a stopping rule so a cancel ends the decode inside the current window; the LLM
+  call runs on a worker thread, so an HTTP request already in flight no longer holds the
+  node (the model is unloaded straight after, which ends the generation at the far end);
+  renders stop between polls and the shots queued behind the cancel are never submitted,
+  so nothing is billed for them; the film stops between clips. A cancelled - or failed -
+  run then hands the card back the way a finished one does: LM Studio unloaded, Whisper
+  dropped, the caching allocator emptied. Cancelling used to leave both models resident
+  and the next node in the graph ran out of memory.
 - New node: **🎵 Music2Video Concat**. Takes a list of VIDEO from anywhere in the graph -
   an LTX or Wan subgraph, a sampler, a load-from-disk node - and cuts it into one film,
   which the main node could only do for clips it had rendered itself. Optional `pipe`

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable
 
 from comfy_api.latest import io
 
@@ -33,6 +36,7 @@ from .util import (
     first_str,
     image_tensor_to_data_uri,
     log,
+    raise_if_interrupted,
     slice_audio,
     warn,
 )
@@ -58,13 +62,45 @@ def _schema_options() -> dict[str, list[str]]:
     return {kind: model_cache.snapshot(kind) or ["(none found)"] for kind in model_cache.KINDS}
 
 
-def _interrupt_check() -> None:
-    try:
-        import comfy.model_management as mm  # type: ignore
+_CLEANUP = threading.local()
 
-        mm.throw_exception_if_processing_interrupted()
-    except ImportError:
-        pass
+
+def _on_cancel(task: Callable[[], None]) -> None:
+    """Add something a run that does not reach the end still has to do.
+
+    Outside a run there is nobody to call these, and the task is dropped.
+    """
+    tasks = getattr(_CLEANUP, "tasks", None)
+    if tasks is not None:
+        tasks.append(task)
+
+
+def _releases_the_card(function):
+    """Run the node so that a cancel - or a failure - still hands the VRAM back.
+
+    Cancelling used to leave Whisper and the local LLM resident: whatever the graph
+    loaded next then hit an out-of-memory error naming neither of them. The tasks are
+    registered as the run acquires the things they release, so a cancel during
+    transcription does not try to unload a model that was never loaded.
+    """
+
+    @functools.wraps(function)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        _CLEANUP.tasks = []
+        try:
+            return function(*args, **kwargs)
+        except BaseException:
+            for task in getattr(_CLEANUP, "tasks", None) or []:
+                try:
+                    task()
+                except Exception as exc:  # a failed cleanup must not replace the cancel
+                    warn(f"could not free memory after the run stopped: {exc}")
+            asr_module.release_cache()  # reserved-but-unallocated blocks are memory nobody can see
+            raise
+        finally:
+            _CLEANUP.tasks = None
+
+    return wrapper
 
 
 class Music2PromptsLM(io.ComfyNode):
@@ -1273,6 +1309,7 @@ io.Boolean.Input(
     # ------------------------------------------------------------------ execution
 
     @classmethod
+    @_releases_the_card
     def execute(  # noqa: PLR0913 - a monolithic node by design
         cls,
         audio,
@@ -1407,6 +1444,15 @@ io.Boolean.Input(
             ledger=ledger,
         )
         local_llm = provider == "lmstudio"
+        if local_llm and lm_unload_after:
+            # a cancel gets the card back the same way the end of a run does - and the
+            # unload is also what stops a completion still generating at the far end
+            def _drop_the_llm() -> None:
+                log(f"stopped - unloading '{model_key}' from LM Studio")
+                client.unload(model_key)
+                client.wait_unloaded(model_key)
+
+            _on_cancel(_drop_the_llm)
         image_model = fal_image_model if image_provider == "fal" else openrouter_image_model
         video_model = fal_video_model if video_provider == "fal" else openrouter_video_model
         if wants_video and video_provider == "fal":
@@ -1423,6 +1469,8 @@ io.Boolean.Input(
                 log(f"unloading '{model_key}' from LM Studio to make room for Whisper")
                 client.unload(model_key)
             speech, _ = audio_to_mono(audio, target_sr=asr_module.WHISPER_SAMPLE_RATE)
+            if not whisper_keep_loaded:
+                _on_cancel(asr_module.unload_all)
             try:
                 transcription = asr_module.transcribe(
                     speech,
@@ -1442,12 +1490,12 @@ io.Boolean.Input(
                 warn(f"transcription failed ({exc}); continuing as an instrumental")
             if not whisper_keep_loaded:
                 asr_module.unload_all()
-        _interrupt_check()
+        raise_if_interrupted()
 
         # ---------------------------------------------------------- music analysis
         progress.step("analysing music")
         analysis = music_dsp.analyze(samples, sample_rate, enabled=analyze_music)
-        _interrupt_check()
+        raise_if_interrupted()
 
         # ---------------------------------------------------------- shot planning
         progress.step("planning shots")
@@ -1467,7 +1515,7 @@ io.Boolean.Input(
         )
         slots = attach_lyrics(slots, transcription.get("words") or [])
         log(f"{len(slots)} shots planned ({min_shot_seconds:.1f}-{max_shot_seconds:.1f}s each)")
-        _interrupt_check()
+        raise_if_interrupted()
 
         # ---------------------------------------------------------- LLM
         progress.step(f"preparing model '{model_key}' ({provider})")
@@ -1517,7 +1565,7 @@ io.Boolean.Input(
         subjects = runner.subjects(
             interpretation, art, instruction, max_subjects, reference_descriptions
         )
-        _interrupt_check()
+        raise_if_interrupted()
 
         progress.step("writing shot content")
         content = runner.shot_content(
@@ -1531,7 +1579,7 @@ io.Boolean.Input(
             include_dialogue and bool(transcription.get("words")),
             batch_size=shots_per_request,
         )
-        _interrupt_check()
+        raise_if_interrupted()
 
         progress.step("writing prompts")
         image_prompts = runner.image_prompts(slots, content, art, subjects, aspect_ratio, shots_per_request)
@@ -1655,7 +1703,7 @@ io.Boolean.Input(
                     identity_uris.append(render_module.data_uri(payload))
                     if index < len(subject_names):
                         sheet_of[subject_names[index]] = len(identity_uris)
-                _interrupt_check()
+                raise_if_interrupted()
 
             frame_model, frame_client = cls._frame_model(
                 image_provider, image_model, fal_image_edit_model, bool(identity_uris), image_client
@@ -1729,7 +1777,7 @@ io.Boolean.Input(
                 if written:
                     log(f"{len(written)} image(s) written to {os.path.dirname(written[0])}")
             log(f"{len(images_out)}/{len(start_frames)} start frames rendered")
-            _interrupt_check()
+            raise_if_interrupted()
 
         if wants_video:
             progress.step(f"rendering {len(slots)} clip(s) with {video_provider}")
@@ -1809,7 +1857,7 @@ io.Boolean.Input(
             )
             videos_out = cls._videos_from_paths(video_paths)
             log(f"{sum(1 for item in payloads if item)}/{len(video_requests)} clips rendered")
-            _interrupt_check()
+            raise_if_interrupted()
 
             if concat_video and video_paths:
                 final_video, final_info = cls._concat(
@@ -1824,7 +1872,7 @@ io.Boolean.Input(
                     filename_prefix,
                     folder,
                 )
-                _interrupt_check()
+                raise_if_interrupted()
 
         debug = {
             "duration": round(duration, 3),

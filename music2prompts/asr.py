@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from .util import PREFIX, log, sanitize_repo_id, warn
+from .util import PREFIX, interrupted, log, raise_if_interrupted, sanitize_repo_id, warn
 
 WHISPER_SAMPLE_RATE = 16000
 SUPPORTED_MODELS = (
@@ -188,6 +188,7 @@ def transcribe(
     an out-of-memory failure at 90 s. So the audio is transcribed in windows and
     the timestamps are shifted back into track time.
     """
+    raise_if_interrupted()  # the model may still have to be fetched, and that is gigabytes
     device, auto_dtype = resolve_device(device_choice)
     dtype = "float32" if device == "cpu" else (dtype_choice if dtype_choice in {"float16", "float32"} else auto_dtype)
 
@@ -222,6 +223,7 @@ def transcribe(
     words: list[dict] = []
     offset = 0.0
     while offset < duration - 1.0:
+        raise_if_interrupted()
         end = min(duration, offset + window)
         piece = samples[int(offset * sample_rate) : int(end * sample_rate)]
         if len(piece) < sample_rate // 2:
@@ -236,6 +238,38 @@ def transcribe(
     return {"text": text, "language": _language_of(text, language), "words": words}
 
 
+_STOPPING_SUPPORTED = True
+
+
+def _cancel_criteria(pipe: Any) -> Any:
+    """A stopping rule that ends generation as soon as Cancel is pressed.
+
+    Whisper decodes a 30 s window token by token with no way back out; without this a
+    cancel waits for the whole window, and on a card tight enough to trip the ladder
+    below, for its retries as well. Returns None when the installed transformers has no
+    ``stopping_criteria`` to hand the rule to, in which case the checks around the call
+    are all we get.
+    """
+    if not _STOPPING_SUPPORTED:
+        return None
+    try:
+        import inspect
+
+        from transformers import StoppingCriteria, StoppingCriteriaList
+
+        if "stopping_criteria" not in inspect.signature(pipe.model.generate).parameters:
+            return None
+    except Exception:  # pragma: no cover - old or unusual transformers
+        return None
+
+    class _Cancelled(StoppingCriteria):
+        def __call__(self, input_ids, scores, **kwargs) -> bool:
+            # the flag is not cleared here: every window and every batch row has to see it
+            return interrupted()
+
+    return StoppingCriteriaList([_Cancelled()])
+
+
 def _transcribe_slice(samples: Any, offset: float, context: dict) -> Any:
     """Run one window through the pipeline, stepping down on out-of-memory."""
     last_error: Exception | None = None
@@ -243,22 +277,37 @@ def _transcribe_slice(samples: Any, offset: float, context: dict) -> Any:
         context["batch_size"], context["device"], context["dtype"], context["word_timestamps"]
     )
     for run_device, run_dtype, batch, timestamps in ladder:
+        raise_if_interrupted()
+        cancel = None
         try:
             pipe = _build_pipeline(context["model_path"], run_device, run_dtype, context["keep_loaded"])
             options = {"return_timestamps": timestamps} if timestamps else {}
+            generate_kwargs = dict(context["generate_kwargs"])
+            cancel = _cancel_criteria(pipe)
+            if cancel is not None:
+                generate_kwargs["stopping_criteria"] = cancel
             # transformers consumes the input dict, so build a fresh one for every attempt
             result = pipe(
                 {"raw": samples, "sampling_rate": int(context["sample_rate"])},
                 chunk_length_s=int(context["chunk_length_s"]),
                 batch_size=max(1, int(batch)),
-                generate_kwargs=context["generate_kwargs"],
+                generate_kwargs=generate_kwargs,
                 **options,
             )
+            # a cancel stops generation mid-window, so what came back is a stump: drop it
+            raise_if_interrupted()
             if timestamps != "word" and context["word_timestamps"]:
                 warn("word-level timestamps were unavailable; lyrics are aligned per segment instead")
             return _shift(result, offset)
         except Exception as exc:
             last_error = exc
+            if "stopping_criteria" in str(exc) and cancel is not None:
+                # no build we know of does this, but losing the transcription over a
+                # cancel affordance would be the wrong trade: drop it and run this rung again
+                globals()["_STOPPING_SUPPORTED"] = False
+                warn("this transformers build refused a stopping rule; a cancel now waits out the window")
+                ladder.append((run_device, run_dtype, batch, timestamps))
+                continue
             if _is_out_of_memory(exc):
                 warn(
                     f"out of memory on {run_device} (batch {batch}, {timestamps or 'no'} timestamps); "

@@ -12,7 +12,16 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .util import PREFIX, clamp_seed, extract_json, log, warn
+from .util import (
+    PREFIX,
+    clamp_seed,
+    extract_json,
+    log,
+    raise_if_interrupted,
+    run_cancellable,
+    sleep_unless_interrupted,
+    warn,
+)
 
 DEFAULT_URL = "http://127.0.0.1:1234"
 FALLBACK_MODELS = ["google/gemma-4-e4b"]
@@ -282,7 +291,7 @@ class LMStudioClient:
                 return
             if state in {"failed", "error", "cancelled", "canceled"}:
                 raise LMStudioError(f"{PREFIX} LM Studio failed to download '{model_key}': {status}")
-            time.sleep(2.0)
+            sleep_unless_interrupted(2.0)
         warn(f"download of '{model_key}' did not report completion in time; continuing.")
 
     def load(self, model_key: str, context_length: int = 32768) -> None:
@@ -412,16 +421,17 @@ class LMStudioClient:
                     {"role": "system", "content": system + "\n\nReply with raw JSON only. No prose, no code fences."},
                     {"role": "user", "content": content},
                 ]
+            raise_if_interrupted()
             try:
                 try:
-                    response = self._request("POST", "/v1/chat/completions", payload)
+                    response = self._chat(payload)
                 except LMStudioError as exc:
                     if "reasoning" not in str(exc).lower() or "reasoning_effort" not in payload:
                         raise
                     warn("this model rejected 'reasoning_effort'; retrying without it")
                     base_payload.pop("reasoning_effort", None)
                     payload.pop("reasoning_effort", None)
-                    response = self._request("POST", "/v1/chat/completions", payload)
+                    response = self._chat(payload)
                 self._record(payload, response, stage, attempt + 1)
                 text = self._first_message(response)
                 if self.verbose:
@@ -434,8 +444,18 @@ class LMStudioClient:
                 last_error = exc
                 if attempt < attempts - 1:
                     warn(f"{stage} failed ({exc}); retrying ({attempt + 1}/{attempts - 1})")
-                    time.sleep(1.5 * (attempt + 1))
+                    sleep_unless_interrupted(1.5 * (attempt + 1))
         raise LMStudioError(f"{PREFIX} stage '{stage}' failed after {attempts} attempts: {last_error}")
+
+    def _chat(self, payload: dict) -> Any:
+        """One completion, run so that Cancel does not have to wait for it.
+
+        A 27B model spends a minute or more on a stage and there is no way to abort an
+        HTTP request already in flight. The call is left to finish into a reply nobody
+        reads; the generation itself ends a moment later, when the cancel path unloads
+        the model.
+        """
+        return run_cancellable(lambda: self._request("POST", "/v1/chat/completions", payload))
 
     @staticmethod
     def _first_message(response: Any) -> str:

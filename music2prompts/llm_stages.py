@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 from .h3_format import CAMERA_MOTIONS
 from .lmstudio import LMStudioClient
-from .util import as_list, chunked, first_str, log, warn
+from .util import as_list, chunked, first_str, log, raise_if_interrupted, warn
 
 # --------------------------------------------------------------------------- static knowledge
 
@@ -223,6 +223,9 @@ class StageRunner:
         self.progress = progress or (lambda message: log(message))
 
     def _call(self, system: str, user: str, schema: dict, stage: str, images: list[str] | None = None) -> Any:
+        # every stage and every batch within a stage comes through here, so this one
+        # check is what stops a cancelled run before it pays for the next call
+        raise_if_interrupted()
         return self.client.chat_json(
             model=self.model,
             system=system,

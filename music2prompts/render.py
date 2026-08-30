@@ -23,7 +23,16 @@ from typing import Any, Callable
 
 from . import cost as cost_module
 from .providers import OPENROUTER_URL, ProviderError, resolve_key
-from .util import PREFIX, clamp_seed, log, warn
+from .util import (
+    PREFIX,
+    clamp_seed,
+    interrupted,
+    log,
+    raise_if_interrupted,
+    run_cancellable,
+    sleep_unless_interrupted,
+    warn,
+)
 
 FAL_QUEUE_URL = "https://queue.fal.run"
 FAL_MODEL_INDEX = "https://fal.ai/api/models"
@@ -216,6 +225,8 @@ def _in_parallel(
     results: list[Any] = [None] * len(jobs)
 
     def guarded(index: int) -> None:
+        if interrupted():  # a cancel must not start the jobs still queued behind it
+            return
         try:
             results[index] = jobs[index]()
         except Exception as exc:
@@ -226,16 +237,24 @@ def _in_parallel(
     if workers == 1:
         for index in range(len(jobs)):
             guarded(index)
+        raise_if_interrupted()
         return results
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    # not a `with`: its __exit__ joins the pool, and on a cancel that would mean waiting
+    # for every render already in flight - the very wait this is here to end. The jobs
+    # left running poll on a cancel-aware sleep, so they stop within the quarter second.
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
         list(pool.map(guarded, range(len(jobs))))
+        raise_if_interrupted()
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     return results
 
 
 def _download(url: str, headers: dict[str, str] | None = None, timeout: int = 300) -> bytes:
     import requests
 
-    response = requests.get(url, headers=headers or {}, timeout=timeout)
+    response = run_cancellable(lambda: requests.get(url, headers=headers or {}, timeout=timeout))
     if response.status_code >= 400:
         raise RenderError(f"{PREFIX} download failed ({response.status_code}) for {url[:120]}")
     return response.content
@@ -499,6 +518,7 @@ class FalClient:
         """One submit-poll-collect round trip. Raises ``_FalRejected`` on 400/422."""
         import requests
 
+        raise_if_interrupted()  # nothing is billed for a job never submitted
         response = requests.post(
             f"{FAL_QUEUE_URL}/{model.strip('/')}",
             headers=self._headers(),
@@ -544,7 +564,7 @@ class FalClient:
             if state in {"FAILED", "ERROR", "CANCELLED"}:
                 self._record(model, kind, None, label, attempt_number, outcome="failed")
                 raise RenderError(f"{PREFIX} fal reported {state} for {model}: {status.text[:300]}")
-            time.sleep(self.poll_seconds)
+            sleep_unless_interrupted(self.poll_seconds)
         raise RenderError(f"{PREFIX} fal did not finish {model} within {self.timeout}s.")
 
     def _record(
@@ -858,8 +878,14 @@ class OpenRouterMediaClient:
             payload["seed"] = clamp_seed(request.seed)
         if request.references:
             payload["input_references"] = self._references(request.references)
-        response = requests.post(
-            f"{OPENROUTER_URL}/images", headers=self._headers(), data=json.dumps(payload), timeout=self.timeout
+        raise_if_interrupted()
+        response = run_cancellable(
+            lambda: requests.post(
+                f"{OPENROUTER_URL}/images",
+                headers=self._headers(),
+                data=json.dumps(payload),
+                timeout=self.timeout,
+            )
         )
         if response.status_code >= 400:
             raise RenderError(f"{PREFIX} OpenRouter image HTTP {response.status_code}: {response.text[:300]}")
@@ -901,6 +927,7 @@ class OpenRouterMediaClient:
         elif request.references:
             payload["input_references"] = self._references(request.references)
 
+        raise_if_interrupted()
         response = requests.post(
             f"{OPENROUTER_URL}/videos", headers=self._headers(), data=json.dumps(payload), timeout=120
         )
@@ -926,7 +953,7 @@ class OpenRouterMediaClient:
             if state in {"failed", "cancelled", "canceled", "error"}:
                 self._record(model, "video", body, request.label, outcome="failed")
                 raise RenderError(f"{PREFIX} OpenRouter video {state}: {str(body)[:300]}")
-            time.sleep(self.poll_seconds)
+            sleep_unless_interrupted(self.poll_seconds)
         raise RenderError(f"{PREFIX} OpenRouter did not finish the video within {self.timeout}s.")
 
 

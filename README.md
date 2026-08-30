@@ -300,6 +300,9 @@ node nor the model still sitting there. So, in order, a run:
 4. empties the caching allocator on the way out — freeing a model is not enough, the
    blocks stay reserved and ComfyUI cannot use what it cannot see.
 
+**Cancel is part of this.** Pressing Cancel used to leave both models resident, so the run
+after it hit the same out-of-memory error — see *Stopping a run* below.
+
 Two things this node cannot do for you:
 
 * **Pick a model that fits.** A 27B LLM on an 11 GB card is mostly running on the CPU: the
@@ -322,6 +325,28 @@ Two things this node cannot do for you:
 **Prompting** — `max_subjects`, `negative_prompt_base`, `include_dialogue`, `h3_style_directive`.
 
 **Debug** — `save_json`, `filename_prefix`, `verbose`.
+
+### Stopping a run
+
+Cancel takes effect now, not at the end of whatever is running:
+
+* **Whisper** is given a stopping rule, so a cancel ends the decode inside the current
+  window instead of after it — and the windows after it never start.
+* **The LLM** is called from a worker thread. An HTTP request already in flight cannot be
+  aborted, so the reply is left to arrive unread; the model is then unloaded, which ends
+  the generation at the far end too.
+* **Renders** stop between polls (a quarter second), and the shots still queued behind the
+  cancel are never submitted — nothing is billed for a clip nobody wants any more.
+* **The film** stops between clips.
+
+Then the run hands the card back on its way out — the same unloads a finished run does,
+plus the caching allocator — so the next node in the graph gets the memory. A run that
+fails does the same.
+
+One consequence worth knowing: the flag ComfyUI sets is deliberately *not* cleared when
+this node notices it. The node renders and polls on several threads at once, and clearing
+it — which ComfyUI's own helper does — would mean the first thread to see the cancel hides
+it from the rest. ComfyUI resets the flag itself at the start of the next prompt.
 
 ---
 

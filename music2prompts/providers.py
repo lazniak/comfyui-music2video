@@ -14,13 +14,21 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from typing import Any
 
 from .lmstudio import DEFAULT_URL as LMSTUDIO_URL
 from .lmstudio import FALLBACK_MODELS as LMSTUDIO_FALLBACK
 from .lmstudio import LMStudioClient
-from .util import PREFIX, clamp_seed, extract_json, log, warn
+from .util import (
+    PREFIX,
+    clamp_seed,
+    extract_json,
+    log,
+    raise_if_interrupted,
+    run_cancellable,
+    sleep_unless_interrupted,
+    warn,
+)
 
 LLM_PROVIDERS = ["lmstudio", "openrouter", "openai", "anthropic"]
 
@@ -155,8 +163,12 @@ class _CloudClient:
 
         url = f"{self.base_url}{path}"
         try:
-            response = requests.post(
-                url, headers=self._headers(), data=json.dumps(payload), timeout=self.timeout
+            # on a worker thread, so a cancel does not have to sit out a reasoning model's
+            # answer; the request finishes into a reply nobody reads
+            response = run_cancellable(
+                lambda: requests.post(
+                    url, headers=self._headers(), data=json.dumps(payload), timeout=self.timeout
+                )
             )
         except requests.exceptions.Timeout as exc:
             raise ProviderError(f"{PREFIX} {self.name} timed out after {self.timeout}s on {path}.") from exc
@@ -211,6 +223,7 @@ class _CloudClient:
             # the final retry drops the schema and parses the reply loosely
             use_schema = schema if (attempts == 1 or attempt < attempts - 1) else None
             self._attempt = attempt + 1
+            raise_if_interrupted()
             try:
                 return self._once(
                     system=system,
@@ -228,7 +241,7 @@ class _CloudClient:
                 last_error = exc
                 if attempt < attempts - 1:
                     warn(f"{stage} failed on {self.name} ({exc}); retrying ({attempt + 1}/{attempts - 1})")
-                    time.sleep(1.5 * (attempt + 1))
+                    sleep_unless_interrupted(1.5 * (attempt + 1))
         raise ProviderError(f"{PREFIX} stage '{stage}' failed on {self.name} after {attempts} attempts: {last_error}")
 
 
