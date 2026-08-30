@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -162,7 +163,31 @@ def image_bytes_to_tensor(payload: bytes):
     return torch.from_numpy(array)[None, ...]
 
 
-def output_directory(subfolder: str = "music2prompts", temporary: bool = False) -> str:
+#: Everything a run writes lands under this, in a folder of its own per project.
+SUBFOLDER = "music2prompts"
+#: Anything that is not a word character, a space or safe punctuation - which covers
+#: the path separators, the characters Windows refuses, and control bytes. Unicode
+#: aware, so "Mój klip" keeps its letters.
+_UNSAFE = re.compile(r"[^\w ._()\[\]-]+", re.UNICODE)
+
+
+def project_folder(name: str, iteration: int) -> str:
+    """``"My Clip", 3`` -> ``"My Clip_v003"``, safe to use as a folder name.
+
+    The name comes from a text widget, so it can hold anything: separators that would
+    write outside the output folder, characters Windows refuses, a string of dots. What
+    survives is one path component; if nothing does, the pack's own name is used.
+    """
+    cleaned = _UNSAFE.sub("-", str(name or "")).strip(" .-")
+    cleaned = re.sub(r"\s+", " ", cleaned)[:64].strip(" .-") or "music2video"
+    try:
+        number = max(0, int(iteration))
+    except (TypeError, ValueError):
+        number = 0
+    return f"{cleaned}_v{number:03d}"
+
+
+def output_directory(subfolder: str = SUBFOLDER, temporary: bool = False) -> str:
     try:
         import folder_paths  # type: ignore
 
@@ -1017,6 +1042,7 @@ def save_media(
     temporary: bool = False,
     reuse: dict[int, str] | None = None,
     stamp: str = "",
+    folder: str = "",
 ) -> list[str]:
     """Write finished renders to disk; returns their paths, skipping the ones that failed.
 
@@ -1024,7 +1050,7 @@ def save_media(
     ``reuse`` names files the live preview already wrote there, so nothing is written to
     the temp folder twice. A shared ``stamp`` keeps one run's files next to each other.
     """
-    directory = output_directory(temporary=temporary)
+    directory = output_directory(folder or SUBFOLDER, temporary=temporary)
     stamp = stamp or run_stamp()
     paths: list[str] = []
     for index, payload in enumerate(payloads):
@@ -1051,10 +1077,11 @@ def save_videos(
     temporary: bool = False,
     reuse: dict[int, str] | None = None,
     stamp: str = "",
+    folder: str = "",
 ) -> list[str]:
     """Write finished clips to disk. They always land somewhere - assembling the final
     film needs real files - and ``temporary`` only chooses which folder."""
-    return save_media(payloads, prefix, "shot", "mp4", temporary, reuse, stamp)
+    return save_media(payloads, prefix, "shot", "mp4", temporary, reuse, stamp, folder)
 
 
 def save_images(
@@ -1062,9 +1089,10 @@ def save_images(
     prefix: str = "music2prompts",
     kind: str = "image",
     stamp: str = "",
+    folder: str = "",
 ) -> list[str]:
     """Write rendered frames into ComfyUI's output folder, in the format they arrived in."""
-    return save_media(payloads, prefix, kind, "", temporary=False, stamp=stamp)
+    return save_media(payloads, prefix, kind, "", temporary=False, stamp=stamp, folder=folder)
 
 
 # --------------------------------------------------------------------------- model probing

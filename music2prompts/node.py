@@ -106,6 +106,36 @@ class Music2PromptsLM(io.ComfyNode):
                     ),
                 ),
                 io.String.Input(
+                    "project_name",
+                    default="music2video",
+                    tooltip=(
+                        "Name of the folder this run writes into: "
+                        "ComfyUI/output/music2prompts/<project_name>_v<iteration>. One name "
+                        "per song or per client keeps a session's frames, clips, transcript, "
+                        "analysis JSON and cost report together instead of piled in one "
+                        "directory. "
+                        "It is one folder name, not a path: separators and anything Windows "
+                        "refuses become '-', so a name cannot write outside the output "
+                        "folder. Letters with diacritics are kept. Leave it empty and the "
+                        "folder is called 'music2video'."
+                    ),
+                ),
+                io.Int.Input(
+                    "iteration",
+                    default=1,
+                    min=0,
+                    max=999999,
+                    control_after_generate=io.ControlAfterGenerate.increment,
+                    tooltip=(
+                        "The take number, appended to the folder as _v001, _v002, ... The "
+                        "widget underneath is set to 'increment', so every run lands in its "
+                        "own folder and nothing overwrites the take you liked. Set it to "
+                        "'fixed' to keep re-running into the same folder - the filenames "
+                        "still carry the timestamp, so even then nothing is overwritten. "
+                        "Anything above 999 simply widens: _v1000."
+                    ),
+                ),
+                io.String.Input(
                     "instruction",
                     multiline=True,
                     default="Cinematic music video. Describe the mood, story or visual world you want.",
@@ -1254,6 +1284,8 @@ io.Boolean.Input(
         whisper_device: str,
         seed: int,
         llm_provider: str = "lmstudio",
+        project_name: str = "music2video",
+        iteration: int = 1,
         image_provider: str = "pipe-steps",
         fal_image_model: str = "",
         fal_image_edit_model: str = "",
@@ -1324,6 +1356,10 @@ io.Boolean.Input(
     ) -> io.NodeOutput:
         started = time.perf_counter()
         stamp = render_module.run_stamp()  # shared by every file this run writes
+        # every file this run writes goes in here, under the pack's own output folder
+        project = render_module.project_folder(project_name, iteration)
+        folder = os.path.join(render_module.SUBFOLDER, project)
+        log(f"project '{project}' -> {render_module.output_directory(folder)}")
         provider = (llm_provider or "lmstudio").strip().lower()
         wants_images = (image_provider or "").lower() not in render_module.NO_RENDER
         wants_video = (video_provider or "").lower() not in render_module.NO_RENDER
@@ -1676,9 +1712,11 @@ io.Boolean.Input(
                 for data in image_payloads
             ]
             if save_rendered_images:
-                written = render_module.save_images(image_payloads, filename_prefix, "frame", stamp)
+                written = render_module.save_images(
+                    image_payloads, filename_prefix, "frame", stamp, folder
+                )
                 written += render_module.save_images(
-                    subject_payloads, filename_prefix, "subject", stamp
+                    subject_payloads, filename_prefix, "subject", stamp, folder
                 )
                 if written:
                     log(f"{len(written)} image(s) written to {os.path.dirname(written[0])}")
@@ -1759,6 +1797,7 @@ io.Boolean.Input(
                 temporary=not save_rendered_video,
                 reuse=feed.paths("video"),
                 stamp=stamp,
+                folder=folder,
             )
             videos_out = cls._videos_from_paths(video_paths)
             log(f"{sum(1 for item in payloads if item)}/{len(video_requests)} clips rendered")
@@ -1768,12 +1807,14 @@ io.Boolean.Input(
                 final_video, final_info = cls._concat(
                     video_paths,
                     rendered_seconds,
-                    audio if final_audio == "music" else None,
+                    # 'mix' needs the track just as much as 'music' does
+                    audio if final_audio in {"music", "mix"} else None,
                     final_audio,
                     final_fit,
                     final_fps,
                     final_crf,
                     filename_prefix,
+                    folder,
                 )
                 _interrupt_check()
 
@@ -1795,6 +1836,7 @@ io.Boolean.Input(
                 "image_model": image_model if wants_images else "",
                 "images_rendered": len(images_out),
                 "subject_images_rendered": len(subject_images_out),
+                "output_folder": render_module.output_directory(folder),
                 "video_provider": video_provider if wants_video else "pipe-steps",
                 "video_model": video_model if wants_video else "",
                 "video_prompt_source": video_prompt_source,
@@ -1818,10 +1860,10 @@ io.Boolean.Input(
         debug["cost"] = ledger.payload(final=True)["total"]
         analysis_json = json.dumps(debug, ensure_ascii=False, indent=2)
         if save_json:
-            cls._save_text(analysis_json, filename_prefix, "analysis", "json", stamp)
+            cls._save_text(analysis_json, filename_prefix, "analysis", "json", stamp, folder)
         if save_cost_report:
-            cls._save_text(ledger.report_json(), filename_prefix, "cost", "json", stamp)
-            cls._save_text(ledger.report_text(), filename_prefix, "cost", "txt", stamp)
+            cls._save_text(ledger.report_json(), filename_prefix, "cost", "json", stamp, folder)
+            cls._save_text(ledger.report_text(), filename_prefix, "cost", "txt", stamp, folder)
         if save_transcript:
             cls._save_text(
                 cls._transcript_document(transcription, slots, i2va, start_frames),
@@ -1829,6 +1871,7 @@ io.Boolean.Input(
                 "transcript",
                 "txt",
                 stamp,
+                folder,
             )
 
         log(f"done in {time.perf_counter() - started:.1f}s - {len(slots)} shots, {len(subject_names)} subjects")
@@ -2084,10 +2127,11 @@ io.Boolean.Input(
         fps: float,
         crf: int,
         prefix: str,
+        folder: str = "",
     ):
         """Glue the clips into one film. Returns (VIDEO or None, info dict)."""
         target = os.path.join(
-            render_module.output_directory(),
+            render_module.output_directory(folder or render_module.SUBFOLDER),
             f"{prefix or 'music2prompts'}_{time.strftime('%Y%m%d-%H%M%S')}_final.mp4",
         )
         try:
@@ -2231,9 +2275,11 @@ io.Boolean.Input(
         return ", ".join(piece for piece in pieces if piece).strip(", ")
 
     @staticmethod
-    def _save_text(payload: str, prefix: str, kind: str, extension: str, stamp: str = "") -> str:
+    def _save_text(
+        payload: str, prefix: str, kind: str, extension: str, stamp: str = "", folder: str = ""
+    ) -> str:
         """Write one sidecar file next to the run's images and clips."""
-        directory = render_module.output_directory()
+        directory = render_module.output_directory(folder or render_module.SUBFOLDER)
         stamp = stamp or render_module.run_stamp()
         path = os.path.join(directory, f"{prefix or 'music2prompts'}_{stamp}_{kind}.{extension}")
         try:

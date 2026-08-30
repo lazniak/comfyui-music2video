@@ -16,6 +16,14 @@ as that version's release notes, so keep the heading format `## <version>`.
   `silent`.
 - `mix` is a new mode in the muxer generally, so the main node's `final_audio` offers it
   too.
+- Two new inputs at the top of the main node: **`project_name`** and **`iteration`**.
+  Everything a run writes now lands in
+  `ComfyUI/output/music2prompts/<project_name>_v<iteration>/` instead of one shared
+  folder. `iteration` carries ComfyUI's increment control, so every run gets its own
+  take folder. The name is sanitised down to a single path component, so nothing typed
+  there can write outside the output folder.
+- Fixed: the main node's `final_audio` = `mix` was not given the track, so it silently
+  fell back to the clips' own audio.
 
 ## 1.1.0
 

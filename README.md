@@ -189,7 +189,7 @@ assembled; `rich` hands the endpoint's writer the wheel, and `model default` sen
   names it actually has (`start_image_url` for Wan, `image_url` for MiniMax H3) and only the options
   it declares. Picking an image-to-video model with `image_provider = pipe-steps` is refused before the run
   starts, rather than after the LLM and the images have been billed.
-* Clips are written to `ComfyUI/output/music2prompts/` and returned on the `videos` output (the
+* Clips are written to the run's project folder (see **Where the files go**) and returned on the `videos` output (the
   regular VIDEO type, so `SaveVideo` / `PreviewVideo` accept them).
 * `concat_video` (on by default) glues them into **one finished film** on the `final_video` output.
   Every clip is placed on a single grid — one size, one frame rate — and trimmed or frozen on its
@@ -211,6 +211,26 @@ assembled; `rich` hands the endpoint's writer the wheel, and `model default` sen
 
 ---
 
+## Where the files go
+
+Everything one run writes — frames, subject sheets, clips, the final film, the transcript,
+the analysis JSON and the cost report — lands in one folder:
+
+```
+ComfyUI/output/music2prompts/<project_name>_v<iteration>/
+```
+
+`project_name` is one folder name, not a path: separators and the characters Windows
+refuses become `-`, so nothing typed there can write outside the output folder; letters
+with diacritics are kept. An empty name falls back to `music2video`.
+
+`iteration` ships with ComfyUI's **increment** control, so it counts itself up after every
+run and each take gets its own folder — `myclip_v001`, `myclip_v002`, … Set the control to
+`fixed` to keep re-running into one folder; filenames still carry the run's timestamp, so
+even then nothing is overwritten.
+
+---
+
 ## Inputs
 
 ### Main
@@ -218,6 +238,8 @@ assembled; `rich` hands the endpoint's writer the wheel, and `model default` sen
 | Widget | Default | Meaning |
 |---|---|---|
 | `audio` | — | AUDIO from `LoadAudio` (or anything producing AUDIO) |
+| `project_name` | `music2video` | Folder this run writes into (see **Where the files go**) |
+| `iteration` | `1` | Take number, appended as `_v001`. Set to **increment**, so every run gets its own folder |
 | `instruction` | — | Your brief: story, mood, world, constraints |
 | `llm_provider` | `lmstudio` | `lmstudio` (local, free), `openrouter`, `openai`, `anthropic` |
 | `lm_model` | first model found | Model list is read live from the running LM Studio |
@@ -289,7 +311,7 @@ The node has six sockets. Every text and number leaves on one of them.
 | 2 | `audio_clips` | **AUDIO**, per shot | Cut sample-accurately to each shot — feed straight into lipsync. Also carried inside the pipe |
 | 3 | `images` | **IMAGE**, per shot | Rendered start frames (empty while `image_provider = pipe-steps`) |
 | 4 | `subject_images` | **IMAGE**, per subject | Rendered reference sheets (`render_subject_sheets`) |
-| 5 | `videos` | **VIDEO**, per shot | Rendered clips, also written to `ComfyUI/output/music2prompts/` |
+| 5 | `videos` | **VIDEO**, per shot | Rendered clips, also written to the run's project folder |
 | 6 | `final_video` | **VIDEO** | Every clip cut together in shot order, with the music |
 
 ### The pipe, and taking it apart

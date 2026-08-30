@@ -23,6 +23,9 @@
  *    passes the server's combo validation.
  *
  * 5. On the concat node, hide the two mix gains unless the audio mode is actually "mix".
+ *
+ * 6. Put a saved workflow's widget values back where they belong when new widgets have
+ *    been inserted above them since it was saved.
  */
 
 import { app } from "../../scripts/app.js";
@@ -177,6 +180,36 @@ const RENAMED = {
   video_provider: { none: "pipe-steps" },
 };
 
+/** Put a saved workflow's values back on the right widgets after ones were inserted.
+ *
+ * `project_name` and `iteration` (and the control widget litegraph adds beside an int
+ * with control_after_generate) went in above everything else, after workflows had
+ * already been saved. Litegraph replays `widgets_values` positionally, so those files
+ * would land every value three rows off - the exact failure that once fed a boolean into
+ * `filename_prefix`. When the file names its values, use the names; otherwise recognise
+ * the older, shorter array by its length and slide it down to where it belongs.
+ */
+const FIRST_LEGACY_WIDGET = "instruction";
+
+function realign(node, info) {
+  if (!info) return;
+  const widgets = (node.widgets || []).filter((widget) => widget.serialize !== false);
+  const named = info.widgets_values_named;
+  if (named) {
+    for (const widget of widgets) {
+      if (widget.name in named) widget.value = named[widget.name];
+    }
+    return;
+  }
+  const values = info.widgets_values;
+  if (!Array.isArray(values)) return;
+  const shift = widgets.findIndex((widget) => widget.name === FIRST_LEGACY_WIDGET);
+  if (shift <= 0 || values.length !== widgets.length - shift) return;  // already current
+  values.forEach((value, index) => {
+    widgets[shift + index].value = value;
+  });
+}
+
 function migrate(node) {
   const widgets = widgetsOf(node);
   for (const name of Object.keys(RENAMED)) {
@@ -254,6 +287,7 @@ app.registerExtension({
       const onConfigure = node.onConfigure;
       node.onConfigure = function (...args) {
         const result = onConfigure?.apply(this, args);
+        realign(this, args[0]);  // before migrate: it reads the provider values
         migrate(this);
         refresh(this);
         return result;
