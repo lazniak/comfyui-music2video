@@ -28,7 +28,11 @@ FAL_QUEUE_URL = "https://queue.fal.run"
 FAL_MODEL_INDEX = "https://fal.ai/api/models"
 FAL_SCHEMA_URL = "https://fal.ai/api/openapi/queue/openapi.json"
 
-MEDIA_PROVIDERS = ["none", "fal", "openrouter"]
+#: "pipe-steps" is the off position: the run still produces every prompt and timing
+#: on the pipe, it just renders nothing and bills nothing. "none" is the name it
+#: carried before and is still accepted, so an older saved workflow keeps running.
+MEDIA_PROVIDERS = ["pipe-steps", "fal", "openrouter"]
+NO_RENDER = frozenset({"", "pipe-steps", "none", "off"})
 
 #: How much of our prompt the endpoint is allowed to rewrite before generating.
 EXPANSION_MODES = ["minimal", "model default", "rich"]
@@ -907,8 +911,8 @@ class OpenRouterMediaClient:
 def make_media_client(
     provider: str, api_key: str = "", timeout: int = 600, verbose: bool = False, ledger=None
 ):
-    provider = (provider or "none").strip().lower()
-    if provider in {"", "none", "off"}:
+    provider = (provider or "pipe-steps").strip().lower()
+    if provider in NO_RENDER:
         return None
     if provider == "fal":
         # fetched once here, on the calling thread, so no render worker ever waits on it

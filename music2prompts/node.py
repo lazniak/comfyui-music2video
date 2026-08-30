@@ -323,14 +323,16 @@ class Music2PromptsLM(io.ComfyNode):
                 io.Combo.Input(
                     "image_provider",
                     options=list(MEDIA_PROVIDERS),
-                    default="none",
+                    default="pipe-steps",
                     tooltip=(
-                        "Where the start frames are rendered. 'none' skips the images: nothing "
+                        "Where the start frames are rendered. 'pipe-steps' skips the images: "
+                        "nothing "
                         "is billed for them and the shots go out as prompts only. 'fal' and "
                         "'openrouter' are paid per-call APIs - one image per shot, plus one "
                         "per subject when 'render_subject_sheets' is on. Setting it also "
                         "unhides the render widgets, and a fal video model whose schema "
-                        "requires an image aborts the run at once while this is 'none', before "
+                        "requires an image aborts the run at once while this is 'pipe-steps', "
+                        "before "
                         "anything is billed. Neither this switch nor 'video_provider' affects "
                         "the LLM: a cloud 'llm_provider' still bills per token."
                     ),
@@ -382,9 +384,9 @@ class Music2PromptsLM(io.ComfyNode):
                 io.Combo.Input(
                     "video_provider",
                     options=list(MEDIA_PROVIDERS),
-                    default="none",
+                    default="pipe-steps",
                     tooltip=(
-                        "Where the clips are rendered. 'none' skips the clips: nothing is "
+                        "Where the clips are rendered. 'pipe-steps' skips the clips: nothing is "
                         "billed for them. 'fal' and 'openrouter' are paid per-call APIs. Only "
                         "'fal' is checked against the endpoint's published schema before "
                         "submitting - the OpenRouter payload is fixed (prompt, duration, "
@@ -751,7 +753,7 @@ class Music2PromptsLM(io.ComfyNode):
                         "were paid for either way, still leave the node on the 'images' and "
                         "'subject_images' outputs, and with 'live_preview' on a copy of each "
                         "is still written to ComfyUI/temp/music2prompts for the gallery. "
-                        "Hidden while both 'image_provider' and 'video_provider' are 'none'."
+                        "Hidden while both 'image_provider' and 'video_provider' are 'pipe-steps'."
                     ),
                 ),
                 io.Boolean.Input(
@@ -1128,7 +1130,7 @@ io.Boolean.Input(
                         "description is forced into the art direction and the subject bible. "
                         "The pixels themselves are prepended to the reference list of every "
                         "start-frame render and of ref2va clips, so with 'image_provider' at "
-                        "'none' they still reach a ref2va video model while an i2va run keeps "
+                        "'pipe-steps' they still reach a ref2va video model while an i2va run keeps "
                         "only the written description - and their presence is what switches "
                         "the shots onto 'fal_image_edit_model'."
                     ),
@@ -1141,12 +1143,12 @@ io.Boolean.Input(
                         "Everything this run wrote in words and numbers, on one wire: the "
                         "start-frame and reference image prompts, the subject names, both "
                         "MiniMax H3 prompt forms, the negatives, and every shot's index, "
-                        "start, end and duration, plus the transcript and the full analysis "
-                        "JSON. Feed it to 'Music2Video Pipe Expand' wherever you need one "
-                        "of them as its own socket; that node passes the pipe through, so it "
-                        "can be tapped as many times as you like along a chain. Only the "
-                        "media stays on its own sockets here, because an IMAGE or a VIDEO "
-                        "goes straight into a preview or a save node."
+                        "start, end and duration, plus the transcript, the full analysis "
+                        "JSON and the per-shot audio clips. Feed it to 'Music2Video Pipe "
+                        "Expand' wherever you need one of them as its own socket; that node "
+                        "passes the pipe through, so it can be tapped as many times as you "
+                        "like along a chain. Only IMAGE and VIDEO stay on their own sockets "
+                        "here, because those go straight into a preview or a save node."
                     ),
                 ),
                 io.Audio.Output(
@@ -1171,7 +1173,7 @@ io.Boolean.Input(
                     is_output_list=True,
                     tooltip=(
                         "The rendered start frames, one IMAGE per shot in shot order. Empty "
-                        "when 'image_provider' is 'none' (the default) - a prompts-only run "
+                        "when 'image_provider' is 'pipe-steps' (the default) - a prompts-only run "
                         "puts nothing here, and any other setting means one billed image "
                         "generation per shot. A shot whose render failed keeps its slot as a "
                         "black frame so the list stays aligned with 'shot_index'; if every "
@@ -1201,7 +1203,7 @@ io.Boolean.Input(
                         "The rendered per-shot clips as VIDEO, in shot order, opened from the "
                         "mp4 files written to ComfyUI/output/music2prompts (or ComfyUI's temp "
                         "folder when 'save_rendered_video' is off). Empty when "
-                        "'video_provider' is 'none' - any other setting means one billed video "
+                        "'video_provider' is 'pipe-steps' - any other setting means one billed video "
                         "generation per shot - and empty on a ComfyUI too old to expose "
                         "VideoFromFile. Clips that failed are skipped rather than padded, so "
                         "this can be shorter than 'shot_index' - use 'final_video' if you need "
@@ -1251,11 +1253,11 @@ io.Boolean.Input(
         whisper_device: str,
         seed: int,
         llm_provider: str = "lmstudio",
-        image_provider: str = "none",
+        image_provider: str = "pipe-steps",
         fal_image_model: str = "",
         fal_image_edit_model: str = "",
         openrouter_image_model: str = "",
-        video_provider: str = "none",
+        video_provider: str = "pipe-steps",
         fal_video_model: str = "",
         openrouter_video_model: str = "",
         render_concurrency: int = 2,
@@ -1322,8 +1324,8 @@ io.Boolean.Input(
         started = time.perf_counter()
         stamp = render_module.run_stamp()  # shared by every file this run writes
         provider = (llm_provider or "lmstudio").strip().lower()
-        wants_images = (image_provider or "none").lower() not in {"", "none"}
-        wants_video = (video_provider or "none").lower() not in {"", "none"}
+        wants_images = (image_provider or "").lower() not in render_module.NO_RENDER
+        wants_video = (video_provider or "").lower() not in render_module.NO_RENDER
         feed = preview_module.PreviewFeed(
             getattr(cls.hidden, "unique_id", None),
             filename_prefix,
@@ -1407,7 +1409,7 @@ io.Boolean.Input(
         # ---------------------------------------------------------- shot planning
         progress.step("planning shots")
         clip_seconds, max_shot_seconds = cls._fit_shots_to_model(
-            clip_seconds, max_shot_seconds, video_provider if wants_video else "none", video_model
+            clip_seconds, max_shot_seconds, video_provider if wants_video else "pipe-steps", video_model
         )
         slots = plan_shots(
             duration=duration,
@@ -1788,11 +1790,11 @@ io.Boolean.Input(
             "reference_image_descriptions": reference_descriptions,
             "shots": shots_debug,
             "rendering": {
-                "image_provider": image_provider if wants_images else "none",
+                "image_provider": image_provider if wants_images else "pipe-steps",
                 "image_model": image_model if wants_images else "",
                 "images_rendered": len(images_out),
                 "subject_images_rendered": len(subject_images_out),
-                "video_provider": video_provider if wants_video else "none",
+                "video_provider": video_provider if wants_video else "pipe-steps",
                 "video_model": video_model if wants_video else "",
                 "video_prompt_source": video_prompt_source,
                 "video_paths": video_paths,
@@ -1848,6 +1850,7 @@ io.Boolean.Input(
                 durations=durations,
                 transcript=transcription.get("text", ""),
                 analysis_json=analysis_json,
+                audio_clips=audio_clips,
             ),
             audio_clips,
             images_out,

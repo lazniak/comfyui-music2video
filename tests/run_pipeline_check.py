@@ -66,9 +66,9 @@ def values(result) -> dict:
 
     pipe, audio_clips, images, subject_images, videos, final_video = result.args
     named = dict(zip(pipe_module.NAMES, pipe_module.unpack(pipe)))
+    assert named["audio_clips"] is audio_clips, "the pipe and the socket must hand out the same clips"
     named.update(
-        audio_clips=audio_clips, images=images, subject_images=subject_images,
-        videos=videos, final_video=final_video,
+        images=images, subject_images=subject_images, videos=videos, final_video=final_video,
     )
     return named
 
@@ -167,8 +167,8 @@ def check_audio_clips(result) -> None:
 
 def check_rendering_is_off_by_default(result) -> None:
     rendering = json.loads(values(result)["analysis_json"])["rendering"]
-    assert rendering["image_provider"] == "none"
-    assert rendering["video_provider"] == "none"
+    assert rendering["image_provider"] == "pipe-steps"
+    assert rendering["video_provider"] == "pipe-steps"
     assert rendering["video_paths"] == []
 
 

@@ -113,3 +113,31 @@ def test_wiring_the_wrong_thing_into_the_expander_names_the_mistake():
 def test_the_pipe_type_is_its_own_so_a_pipe_from_another_pack_cannot_connect():
     assert pipe_module.PIPE_TYPE == "M2P_PIPE"
     assert pipe_module.PIPE_TYPE not in {"STRING", "INT", "FLOAT", "IMAGE", "VIDEO", "AUDIO", "PIPE"}
+
+
+def test_the_per_shot_audio_rides_the_pipe_as_a_list():
+    """Shot data, like the timings - a lipsync graph wants it off the same wire."""
+    field = {item.name: item for item in pipe_module.FIELDS}["audio_clips"]
+    assert (field.kind, field.is_list) == ("Audio", True)
+    packed = pipe_module.pack(audio_clips=[{"waveform": 1}, {"waveform": 2}])
+    assert packed["audio_clips"] == [{"waveform": 1}, {"waveform": 2}]
+    assert pipe_module.unpack(packed)[pipe_module.NAMES.index("audio_clips")] == packed["audio_clips"]
+
+
+def test_audio_clips_was_appended_not_inserted():
+    """Field order is the expander's socket order, and a saved wire refers to it by index."""
+    assert pipe_module.NAMES[-1] == "audio_clips"
+    assert pipe_module.NAMES[:12] == (
+        "image_prompts_start", "image_prompts_reference", "reference_subjects",
+        "video_prompts_i2va", "video_prompts_ref2va", "negative_prompts",
+        "shot_index", "start_times", "end_times", "durations",
+        "transcript", "analysis_json",
+    ), "inserting a field above these would silently re-point every wire below it"
+
+
+def test_the_clips_are_reachable_both_ways():
+    """Kept on its own socket as well: a lipsync node is often nowhere near an expander."""
+    produced = [output.display_name for output in node().define_schema().outputs]
+    expanded = [output.display_name for output in expander().define_schema().outputs]
+    assert "audio_clips" in produced and "audio_clips" in expanded
+

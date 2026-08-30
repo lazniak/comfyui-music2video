@@ -1,7 +1,7 @@
 /**
  * Music2Video - node-side behaviour for the provider widgets.
  *
- * Two jobs, both deliberately small:
+ * Four jobs, all deliberately small:
  *
  * 1. Show only the widgets that belong to the selected providers. Every provider has
  *    its own model dropdown (ComfyUI builds a combo's options once, on the server), so
@@ -18,6 +18,9 @@
  *
  * 3. Give the pipe wire a colour of its own, so the one line carrying every prompt and
  *    timing is not another grey noodle among the media links.
+ *
+ * 4. Rewrite renamed widget values on load, so a workflow saved before a rename still
+ *    passes the server's combo validation.
  */
 
 import { app } from "../../scripts/app.js";
@@ -112,6 +115,11 @@ function setVisible(widget, visible) {
   return changed;
 }
 
+/** Does this provider value actually render anything? "none" is the pre-rename spelling. */
+function renders(value) {
+  return !["pipe-steps", "none", ""].includes(String(value ?? ""));
+}
+
 function refresh(node) {
   const widgets = widgetsOf(node);
   let changed = false;
@@ -123,8 +131,8 @@ function refresh(node) {
     }
   }
 
-  const images = widgets.image_provider && widgets.image_provider.value !== "none";
-  const videos = widgets.video_provider && widgets.video_provider.value !== "none";
+  const images = widgets.image_provider && renders(widgets.image_provider.value);
+  const videos = widgets.video_provider && renders(widgets.video_provider.value);
   for (const name of RENDER_ONLY) changed = setVisible(widgets[name], !!(images || videos)) || changed;
   for (const name of VIDEO_ONLY) changed = setVisible(widgets[name], !!videos) || changed;
 
@@ -152,6 +160,27 @@ function applyLists(node, lists) {
     if (!widget.value || String(widget.value).startsWith("(")) widget.value = next[0];
   }
   invalidate(node);
+}
+
+/** Rewrite values that were renamed after a workflow could already have been saved.
+ *
+ * `image_provider` / `video_provider` used to call the off position "none". The server
+ * validates a combo against its current option list, so a graph saved back then would
+ * fail with "Value not in list" before any of our code runs. Rewriting on load costs
+ * nothing and keeps yesterday's workflow working.
+ */
+const RENAMED = {
+  image_provider: { none: "pipe-steps" },
+  video_provider: { none: "pipe-steps" },
+};
+
+function migrate(node) {
+  const widgets = widgetsOf(node);
+  for (const name of Object.keys(RENAMED)) {
+    const widget = widgets[name];
+    const replacement = widget && RENAMED[name][String(widget.value)];
+    if (replacement) widget.value = replacement;
+  }
 }
 
 function watch(node, name) {
@@ -188,12 +217,14 @@ app.registerExtension({
     if (node.comfyClass !== NODE_ID) return;
     try {
       for (const name of ["llm_provider", "image_provider", "video_provider"]) watch(node, name);
+      migrate(node);
       refresh(node);
       fetchLists().then((lists) => applyLists(node, lists));
 
       const onConfigure = node.onConfigure;
       node.onConfigure = function (...args) {
         const result = onConfigure?.apply(this, args);
+        migrate(this);
         refresh(this);
         return result;
       };

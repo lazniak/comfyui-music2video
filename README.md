@@ -16,8 +16,8 @@ cloud LLM. Rendering is **off by default** and only happens when you pick a prov
 | BPM, beat grid, sections, energy | **librosa** when installed, otherwise a built-in numpy/scipy fallback |
 | Treatment, art direction, shot writing | **LM Studio** (default, `google/gemma-4-e4b`) or **OpenRouter** / **OpenAI** / **Anthropic** |
 | MiniMax H3 prompt formatting | deterministic Python renderers — the model fills fields, the code builds the exact skeleton |
-| Optional image rendering | **fal.ai** or **OpenRouter** (`image_provider`, default `none`) |
-| Optional video rendering | **fal.ai** or **OpenRouter** (`video_provider`, default `none`) |
+| Optional image rendering | **fal.ai** or **OpenRouter** (`image_provider`, default `pipe-steps`) |
+| Optional video rendering | **fal.ai** or **OpenRouter** (`video_provider`, default `pipe-steps`) |
 | Assembling the final film | **PyAV** — clips trimmed to their shots, music muxed in, no ffmpeg binary needed |
 
 Built on the ComfyUI **V3 node schema**, so the 30+ secondary settings collapse into the native
@@ -113,7 +113,7 @@ range the media providers accept (ComfyUI's seed widget goes far higher, and Ope
 outright).
 
 > **These are paid, per-call APIs.** LM Studio and the whole analysis are free; every other provider
-> bills you. Image and video rendering therefore stays `none` until you choose otherwise, and one
+> bills you. Image and video rendering therefore stays `pipe-steps` until you choose otherwise, and one
 > run renders one image per shot (plus one per subject with `render_subject_sheets`) and one clip per
 > shot. A 3-minute track cut into 6-second shots is 30 shots — check the provider's price per image
 > and per second of video before you start it.
@@ -187,7 +187,7 @@ assembled; `rich` hands the endpoint's writer the wheel, and `model default` sen
   `videos` outputs, and `save_rendered_video` keeps the clips in `output/`.
 * fal payloads are built from each endpoint's own published schema, so a model is sent the field
   names it actually has (`start_image_url` for Wan, `image_url` for MiniMax H3) and only the options
-  it declares. Picking an image-to-video model with `image_provider = none` is refused before the run
+  it declares. Picking an image-to-video model with `image_provider = pipe-steps` is refused before the run
   starts, rather than after the LLM and the images have been billed.
 * Clips are written to `ComfyUI/output/music2prompts/` and returned on the `videos` output (the
   regular VIDEO type, so `SaveVideo` / `PreviewVideo` accept them).
@@ -200,7 +200,7 @@ assembled; `rich` hands the endpoint's writer the wheel, and `model default` sen
   list still lines up with the shots. When *every* shot fails, the node raises with the provider's
   own error instead of returning empty lists — an empty list wired into another node makes ComfyUI
   fail with a bare `IndexError: list index out of range`.
-* Do not wire `images` / `videos` / `final_video` while the matching provider is `none`: those
+* Do not wire `images` / `videos` / `final_video` while the matching provider is `pipe-steps`: those
   outputs are then empty, and the same `IndexError` follows.
 
 ---
@@ -227,9 +227,9 @@ assembled; `rich` hands the endpoint's writer the wheel, and `model default` sen
 | `word_influence` | `0.6` | +1 literal lyrics → −1 pure atmosphere |
 | `whisper_device` | `auto` | `auto`, `cuda:0`, `cuda:1`, `cpu` |
 | `seed` | `0` | Forwarded to the LLM and to the image/video models |
-| `image_provider` | `none` | `none`, `fal`, `openrouter` — `none` means prompts only |
+| `image_provider` | `pipe-steps` | `pipe-steps`, `fal`, `openrouter` — `pipe-steps` renders nothing: the shots leave as prompts on the pipe |
 | `fal_image_model` / `openrouter_image_model` | first model found | Image model per provider |
-| `video_provider` | `none` | `none`, `fal`, `openrouter` |
+| `video_provider` | `pipe-steps` | `pipe-steps`, `fal`, `openrouter` |
 | `fal_video_model` / `openrouter_video_model` | first model found | Video model per provider |
 | `render_concurrency` | `2` | Images/clips rendered at the same time |
 | `reference_images` | optional socket | Described by the vision model and locked into every prompt |
@@ -280,8 +280,8 @@ The node has six sockets. Every text and number leaves on one of them.
 | # | Output | Type | Contents |
 |---|---|---|---|
 | 1 | `pipe` | **M2P_PIPE** | Every prompt, name, timing, the transcript and the analysis JSON — see the table below |
-| 2 | `audio_clips` | **AUDIO**, per shot | Cut sample-accurately to each shot — feed straight into lipsync |
-| 3 | `images` | **IMAGE**, per shot | Rendered start frames (empty while `image_provider = none`) |
+| 2 | `audio_clips` | **AUDIO**, per shot | Cut sample-accurately to each shot — feed straight into lipsync. Also carried inside the pipe |
+| 3 | `images` | **IMAGE**, per shot | Rendered start frames (empty while `image_provider = pipe-steps`) |
 | 4 | `subject_images` | **IMAGE**, per subject | Rendered reference sheets (`render_subject_sheets`) |
 | 5 | `videos` | **VIDEO**, per shot | Rendered clips, also written to `ComfyUI/output/music2prompts/` |
 | 6 | `final_video` | **VIDEO** | Every clip cut together in shot order, with the music |
@@ -313,6 +313,7 @@ Everything in the pipe except `transcript` and `analysis_json` is a **list**.
 | `end_times` | shots | Seconds |
 | `durations` | shots | Seconds, inside the `min_shot_seconds`…`max_shot_seconds` window |
 | `transcript` | — | Full transcription (empty for instrumentals) |
+| `audio_clips` | shots | The same per-shot **AUDIO** as socket 2, so a lipsync graph can take it off the pipe |
 | `analysis_json` | — | Everything: BPM, beats, sections, treatment, art direction, subject bible, per-shot fields, what was rendered, and what it cost |
 
 > **Upgrading:** a workflow saved before the pipe existed loses the links to those twelve

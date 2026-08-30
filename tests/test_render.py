@@ -411,3 +411,15 @@ def test_openrouter_video_reports_failure(monkeypatch, openrouter):
     )
     with pytest.raises(RenderError, match="failed"):
         openrouter.video("minimax/hailuo-3", VideoRequest(prompt="x"))
+
+
+@pytest.mark.parametrize("provider", ["pipe-steps", "none", "off", "", "  PIPE-STEPS  "])
+def test_the_off_position_builds_no_client_whatever_it_is_called(provider):
+    """'none' was the name before the rename; a workflow saved then must still run."""
+    assert render_module.make_media_client(provider) is None
+
+
+def test_the_off_position_is_the_first_choice_in_the_dropdown():
+    assert render_module.MEDIA_PROVIDERS[0] == "pipe-steps"
+    assert render_module.MEDIA_PROVIDERS[1:] == ["fal", "openrouter"]
+

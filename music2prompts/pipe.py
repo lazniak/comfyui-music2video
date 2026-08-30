@@ -1,11 +1,13 @@
 """The bundle of text and numbers one run produces, carried down a single wire.
 
-Seventeen sockets on one node is a wall of noodles, and twelve of them were strings and
-numbers that almost always travel together. They now leave as one ``M2P_PIPE`` value - a
-plain dict - and the *Music2Video Pipe Expand* node hands them back individually
-wherever they are actually needed. The media outputs stay as sockets: an IMAGE or a VIDEO
-is normally wired straight into a preview or a save node, so hiding them behind an
-expander would cost a node and buy nothing.
+Seventeen sockets on one node is a wall of noodles, and most of them were per-shot values
+that almost always travel together. They now leave as one ``M2P_PIPE`` value - a plain
+dict - and the *Music2Video Pipe Expand* node hands them back individually wherever they
+are actually needed. The per-shot audio rides along with them, because it is shot data
+like the timings are, and a lipsync graph wants it next to the prompts.
+
+IMAGE and VIDEO stay as sockets: those are normally wired straight into a preview or a
+save node, so hiding them behind an expander would cost a node and buy nothing.
 
 This module is the single source of truth for what the pipe holds. The producing node and
 the expander both build their schema from :data:`FIELDS`, so the two cannot drift apart -
@@ -44,7 +46,7 @@ FIELDS: tuple[Field, ...] = (
         "never short. Always produced, whatever 'image_provider' is set to. Wire it into a "
         "CLIPTextEncode node (whose CONDITIONING feeds a sampler) or into a text preview node "
         "- it is the exact text the built-in renderer sends when 'image_provider' is not "
-        "'none'."
+        "'pipe-steps'."
         ),
     ),
     Field(
@@ -189,6 +191,22 @@ FIELDS: tuple[Field, ...] = (
         "(providers, models, clip paths) and the main settings. Always produced. The same "
         "text is written to ..._analysis.json in ComfyUI/output/music2prompts when "
         "'save_json' is on."
+        ),
+    ),
+    # Appended rather than filed next to 'durations' on purpose: the order of these fields
+    # is the order of the expander's output sockets, and a saved workflow refers to those
+    # by index. Inserting one in the middle would silently re-point every wire below it.
+    Field(
+        "audio_clips",
+        "Audio",
+        True,
+        (
+        "One AUDIO per shot, cut from the input track at that shot's boundaries and widened "
+        "on both sides by 'audio_clip_padding', with the original sample rate and channel "
+        "layout untouched. Always produced, even on a prompts-only run. Send them to "
+        "PreviewAudio / SaveAudio or a lipsync node. These are the same clips the node also "
+        "offers on its own 'audio_clips' socket - here so a lipsync graph can take them off "
+        "the pipe next to the prompts instead of running a second wire across the canvas."
         ),
     ),
 )
