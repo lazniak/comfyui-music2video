@@ -14,6 +14,12 @@ as that version's release notes, so keep the heading format `## <version>`.
   run then hands the card back the way a finished one does: LM Studio unloaded, Whisper
   dropped, the caching allocator emptied. Cancelling used to leave both models resident
   and the next node in the graph ran out of memory.
+- Fixed: every transcription printed *"Using `chunk_length_s` is very experimental with seq2seq
+  models"*. A window shorter than one chunk was being chunked into exactly one chunk - a no-op
+  that cost Whisper its own long-form path, the one it was trained for. Windows are now handed
+  to the model whole; `whisper_chunk_length_s` is only used when a slice really is longer than a
+  chunk (`whisper_window_seconds = 0`), and the node then says once, in its own words, that word
+  timings can drift around the seams.
 - New node: **🎵 Music2Video Concat**. Takes a list of VIDEO from anywhere in the graph -
   an LTX or Wan subgraph, a sampler, a load-from-disk node - and cuts it into one film,
   which the main node could only do for clips it had rendered itself. Optional `pipe`

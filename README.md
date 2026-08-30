@@ -284,6 +284,12 @@ even then nothing is overwritten.
 >
 > `free_lmstudio_vram` (on by default) unloads the LM Studio model before Whisper runs, because one
 > 11 GB card cannot hold both. `whisper-large-v3-turbo` is much lighter if you prefer speed.
+>
+> A window is handed to Whisper whole, which is the model's own long-form path.
+> `whisper_chunk_length_s` only comes into play when a slice is genuinely longer than a chunk —
+> setting `whisper_window_seconds` to 0 hands the whole track over at once, and then transformers'
+> chunking is what keeps it inside the card. That chunking is approximate at the seams (word timings
+> can drift), and the node says so once when it happens.
 
 ### Handing the card back
 

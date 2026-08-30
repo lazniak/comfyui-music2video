@@ -30,6 +30,11 @@ _ALLOW_PATTERNS = [
 
 _PIPELINE_CACHE: dict[tuple[str, str, str], Any] = {}
 
+# How far past a window (or a chunk) a slice may run before it is worth splitting.
+# A tail of a few seconds transcribed on its own reads worse than the same seconds
+# left on the end of the piece before it.
+WINDOW_SLACK = 5.0
+
 
 def resolve_device(choice: str) -> tuple[str, str]:
     """Return ``(device, dtype)`` honoring the widget choice and hardware reality."""
@@ -187,6 +192,10 @@ def transcribe(
     ``chunk_length_s``). Measured on an 11 GB card: ~7 GB for 60 s of audio and
     an out-of-memory failure at 90 s. So the audio is transcribed in windows and
     the timestamps are shifted back into track time.
+
+    A window that fits in one chunk is handed to the model whole, which is Whisper's
+    own long-form path; ``chunk_length_s`` is only passed when a slice is genuinely
+    longer than a chunk, because transformers' chunking is approximate at the seams.
     """
     raise_if_interrupted()  # the model may still have to be fetched, and that is gigabytes
     device, auto_dtype = resolve_device(device_choice)
@@ -214,7 +223,7 @@ def transcribe(
         "sample_rate": sample_rate,
     }
 
-    if window < 5.0 or duration <= window + 5.0:
+    if window < 5.0 or duration <= window + WINDOW_SLACK:
         return _normalize(_transcribe_slice(samples, 0.0, context), language)
 
     windows = int(duration // window) + (1 if duration % window > 1.0 else 0)
@@ -273,15 +282,36 @@ def _cancel_criteria(pipe: Any) -> Any:
 def _transcribe_slice(samples: Any, offset: float, context: dict) -> Any:
     """Run one window through the pipeline, stepping down on out-of-memory."""
     last_error: Exception | None = None
+    seconds = len(samples) / float(max(1, int(context["sample_rate"])))
+    chunk_length_s = int(context["chunk_length_s"])
+    # transformers' own chunking does something only to a slice longer than one chunk.
+    # Below that it is a no-op that still costs Whisper its native long-form path - the one
+    # the model was trained for and the one transformers tells you to use - so it is left
+    # out entirely, and its "very experimental with seq2seq models" warning with it.
+    chunking = seconds > chunk_length_s + WINDOW_SLACK
+    if chunking and not context.get("chunking_said"):
+        context["chunking_said"] = True
+        warn(
+            f"a {seconds:.0f}s slice is longer than chunk_length_s={chunk_length_s}, so "
+            "transformers chunks it instead of Whisper: word timings can drift around the "
+            "seams. Set whisper_window_seconds to 30 to keep the model's own long-form path."
+        )
     ladder = _attempt_ladder(
-        context["batch_size"], context["device"], context["dtype"], context["word_timestamps"]
+        context["batch_size"] if chunking else 1,  # batching exists only across chunks
+        context["device"],
+        context["dtype"],
+        context["word_timestamps"],
     )
     for run_device, run_dtype, batch, timestamps in ladder:
         raise_if_interrupted()
         cancel = None
         try:
             pipe = _build_pipeline(context["model_path"], run_device, run_dtype, context["keep_loaded"])
-            options = {"return_timestamps": timestamps} if timestamps else {}
+            options: dict[str, Any] = {"return_timestamps": timestamps} if timestamps else {}
+            if chunking:
+                options["chunk_length_s"] = chunk_length_s
+                options["batch_size"] = max(1, int(batch))
+                options["ignore_warning"] = True  # already said above, once, in our own terms
             generate_kwargs = dict(context["generate_kwargs"])
             cancel = _cancel_criteria(pipe)
             if cancel is not None:
@@ -289,8 +319,6 @@ def _transcribe_slice(samples: Any, offset: float, context: dict) -> Any:
             # transformers consumes the input dict, so build a fresh one for every attempt
             result = pipe(
                 {"raw": samples, "sampling_rate": int(context["sample_rate"])},
-                chunk_length_s=int(context["chunk_length_s"]),
-                batch_size=max(1, int(batch)),
                 generate_kwargs=generate_kwargs,
                 **options,
             )
