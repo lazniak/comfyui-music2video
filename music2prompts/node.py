@@ -1515,6 +1515,14 @@ io.Boolean.Input(
         )
         slots = attach_lyrics(slots, transcription.get("words") or [])
         log(f"{len(slots)} shots planned ({min_shot_seconds:.1f}-{max_shot_seconds:.1f}s each)")
+        # The names this run's own files carry, handed out on the pipe so a clip rendered
+        # elsewhere in the graph - an LTX or Wan subgraph fed from these prompts - can be
+        # saved into the same folder, in shot order, under the same run stamp.
+        clip_prefixes = [
+            render_module.save_prefix(folder, filename_prefix, stamp, "shot", index + 1)
+            for index in range(len(slots))
+        ]
+        final_video_name = render_module.save_prefix(folder, filename_prefix, stamp, "final")
         raise_if_interrupted()
 
         # ---------------------------------------------------------- LLM
@@ -1871,6 +1879,7 @@ io.Boolean.Input(
                     final_crf,
                     filename_prefix,
                     folder,
+                    stamp,
                 )
                 raise_if_interrupted()
 
@@ -1974,6 +1983,8 @@ io.Boolean.Input(
                 transcript=transcription.get("text", ""),
                 analysis_json=analysis_json,
                 audio_clips=audio_clips,
+                clip_prefixes=clip_prefixes,
+                final_video_name=final_video_name,
             ),
             # An empty list wired anywhere crashes ComfyUI's list expansion with a bare
             # IndexError; a blocker skips whatever hangs off that socket instead, and
@@ -2187,11 +2198,13 @@ io.Boolean.Input(
         crf: int,
         prefix: str,
         folder: str = "",
+        stamp: str = "",
     ):
         """Glue the clips into one film. Returns (VIDEO or None, info dict)."""
-        target = os.path.join(
-            render_module.output_directory(folder or render_module.SUBFOLDER),
-            f"{prefix or 'music2prompts'}_{time.strftime('%Y%m%d-%H%M%S')}_final.mp4",
+        # the run's own stamp, not a fresh one: this is the name the pipe hands out as
+        # 'final_video_name', and a name that does not match the file is worse than none
+        target = render_module.output_path(
+            render_module.save_prefix(folder, prefix or "music2prompts", stamp or render_module.run_stamp(), "final")
         )
         try:
             info = video_module.concat_clips(

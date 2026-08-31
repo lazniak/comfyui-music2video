@@ -299,3 +299,86 @@ def test_nothing_to_join_says_so_instead_of_writing_an_empty_file():
     cls = node()
     with pytest.raises(ValueError, match="no clips to join"):
         cls.execute(videos=[])
+
+
+# --------------------------------------------------------------------------- where it lands
+
+
+def directory_like_comfyui(tmp_path):
+    """The real output_directory: base + subfolder, created on the way."""
+    def directory(subfolder="", temporary=False):
+        path = os.path.join(str(tmp_path), subfolder)
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    return directory
+
+
+def test_a_film_can_be_written_into_a_folder_that_does_not_exist_yet(tmp_path):
+    """The bug this covers cost half an hour: PyAV opens the file at the first packet, so
+    a missing folder surfaced as a bare '[Errno 2] No such file or directory' from inside
+    the muxer, naming no path, after every clip had already been decoded and scaled."""
+    target = tmp_path / "films" / "tour" / "night.mp4"
+    info = video_module.concat_clips(
+        [clip(str(tmp_path / "a.mp4"), frames=12, rate=24)], str(target), audio_mode="none"
+    )
+    assert os.path.exists(info["path"])
+
+
+def test_the_pipe_names_the_film_when_the_widget_is_left_empty(tmp_path, monkeypatch):
+    """So the film lands in the run's project folder, beside the clips it was cut from."""
+    cls = node()
+    from music2prompts import pipe as pipe_module
+    from music2prompts import render as render_module
+
+    monkeypatch.setattr(render_module, "output_directory", directory_like_comfyui(tmp_path))
+    clips = [FakeVideo(clip(str(tmp_path / "0.mp4"), frames=24, rate=24))]
+    packed = pipe_module.pack(final_video_name="music2prompts/song_v003/music2video_STAMP_final")
+
+    path = cls.execute(videos=clips, pipe=[packed], audio_mode=["silent"]).args[1]
+
+    assert os.path.basename(path) == "music2video_STAMP_final.mp4"
+    assert os.path.basename(os.path.dirname(path)) == "song_v003"
+
+
+def test_a_prefix_typed_into_the_widget_wins_over_the_pipe(tmp_path, monkeypatch):
+    cls = node()
+    from music2prompts import pipe as pipe_module
+    from music2prompts import render as render_module
+
+    monkeypatch.setattr(render_module, "output_directory", directory_like_comfyui(tmp_path))
+    clips = [FakeVideo(clip(str(tmp_path / "0.mp4"), frames=24, rate=24))]
+    packed = pipe_module.pack(final_video_name="music2prompts/song_v003/music2video_STAMP_final")
+
+    path = cls.execute(
+        videos=clips, pipe=[packed], audio_mode=["silent"], filename_prefix=["mine"]
+    ).args[1]
+
+    assert os.path.basename(path).startswith("mine_") and path.endswith("_concat.mp4")
+
+
+def test_without_a_pipe_or_a_prefix_it_still_names_itself(tmp_path, monkeypatch):
+    cls = node()
+    from music2prompts import render as render_module
+
+    monkeypatch.setattr(render_module, "output_directory", directory_like_comfyui(tmp_path))
+    clips = [FakeVideo(clip(str(tmp_path / "0.mp4"), frames=24, rate=24))]
+
+    path = cls.execute(videos=clips, audio_mode=["silent"]).args[1]
+
+    assert os.path.basename(path).startswith("music2video_")
+    assert os.path.basename(os.path.dirname(path)) == render_module.SUBFOLDER
+
+
+def test_a_prefix_with_a_subfolder_writes_into_it(tmp_path, monkeypatch):
+    """ComfyUI's own save nodes take 'video/ComfyUI'; typing that here used to be errno 2."""
+    cls = node()
+    from music2prompts import render as render_module
+
+    monkeypatch.setattr(render_module, "output_directory", directory_like_comfyui(tmp_path))
+    clips = [FakeVideo(clip(str(tmp_path / "0.mp4"), frames=24, rate=24))]
+
+    path = cls.execute(videos=clips, audio_mode=["silent"], filename_prefix=["video/ComfyUI"]).args[1]
+
+    assert os.path.basename(os.path.dirname(path)) == "video"
+    assert os.path.exists(path)

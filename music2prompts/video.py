@@ -227,7 +227,14 @@ def concat_clips(  # noqa: PLR0912, PLR0915 - one linear muxing pass, kept in on
         f"audio: {mode}"
     )
 
-    container = av.open(output_path, mode="w", format="mp4", options={"movflags": "faststart"})
+    # PyAV opens the file when the first packet is muxed, not here, so a missing folder
+    # surfaces from inside the muxer as "[Errno 2] No such file or directory" naming
+    # nothing - after every clip has already been decoded and scaled.
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    try:
+        container = av.open(output_path, mode="w", format="mp4", options={"movflags": "faststart"})
+    except OSError as exc:
+        raise VideoError(f"{PREFIX} cannot write the film to {output_path}: {exc}") from exc
     video = container.add_stream("libx264", rate=rate)
     video.width, video.height, video.pix_fmt = width, height, "yuv420p"
     video.codec_context.time_base = time_base

@@ -135,3 +135,52 @@ def test_the_take_number_counts_itself_up_after_every_run():
     iteration = next(item for item in schema.inputs if item.id == "iteration")
     assert iteration.control_after_generate == io.ControlAfterGenerate.increment
     assert iteration.default == 1
+
+
+# --------------------------------------------------------------------------- names for save nodes
+
+
+def test_the_prefix_is_the_name_this_run_gives_its_own_files():
+    """A clip rendered elsewhere in the graph has to land beside the ones rendered here."""
+    prefix = render_module.save_prefix("music2prompts/clip_v003", "music2video", "STAMP", "shot", 1)
+    assert prefix == "music2prompts/clip_v003/music2video_STAMP_shot001"
+    assert render_module.save_prefix("music2prompts/clip_v003", "music2video", "STAMP", "final") == (
+        "music2prompts/clip_v003/music2video_STAMP_final"
+    )
+
+
+def test_the_prefix_uses_forward_slashes_whatever_the_platform():
+    """ComfyUI's save nodes take one string and split it themselves."""
+    folder = os.path.join("music2prompts", "clip_v003")
+    assert "\\" not in render_module.save_prefix(folder, "p", "S", "shot", 2)
+
+
+def test_a_run_without_a_project_folder_still_gets_a_name():
+    assert render_module.save_prefix("", "p", "S", "shot", 7) == "p_S_shot007"
+
+
+# --------------------------------------------------------------------------- writing to it
+
+
+def test_the_folder_a_name_asks_for_is_created(output):
+    """PyAV opens the file at the first packet and reports a missing folder as errno 2,
+    naming nothing - after every clip has already been decoded."""
+    path = render_module.output_path("music2prompts/clip_v009/take_final")
+    assert os.path.isdir(os.path.dirname(path))
+    assert path.endswith("take_final.mp4")
+
+
+def test_a_name_with_no_folder_lands_in_the_pack_s_own(output):
+    path = render_module.output_path("music2video_STAMP_concat")
+    assert os.path.basename(os.path.dirname(path)) == render_module.SUBFOLDER
+
+
+@pytest.mark.parametrize("name", ["../../etc/passwd", "..", "C:/Windows/system32/x", ""])
+def test_nothing_a_widget_can_hold_writes_outside_the_output_folder(name, output, tmp_path):
+    path = os.path.abspath(render_module.output_path(name))
+    assert path.startswith(os.path.abspath(str(tmp_path))), path
+
+
+def test_a_windows_style_separator_is_a_folder_too(output):
+    path = render_module.output_path("films" + chr(92) + "tour" + chr(92) + "night")
+    assert os.path.basename(os.path.dirname(path)) == "tour"

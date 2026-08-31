@@ -124,14 +124,13 @@ def test_the_per_shot_audio_rides_the_pipe_as_a_list():
     assert pipe_module.unpack(packed)[pipe_module.NAMES.index("audio_clips")] == packed["audio_clips"]
 
 
-def test_audio_clips_was_appended_not_inserted():
+def test_new_fields_are_appended_never_inserted():
     """Field order is the expander's socket order, and a saved wire refers to it by index."""
-    assert pipe_module.NAMES[-1] == "audio_clips"
-    assert pipe_module.NAMES[:12] == (
+    assert pipe_module.NAMES[:13] == (
         "image_prompts_start", "image_prompts_reference", "reference_subjects",
         "video_prompts_i2va", "video_prompts_ref2va", "negative_prompts",
         "shot_index", "start_times", "end_times", "durations",
-        "transcript", "analysis_json",
+        "transcript", "analysis_json", "audio_clips",
     ), "inserting a field above these would silently re-point every wire below it"
 
 
@@ -157,3 +156,19 @@ def test_an_empty_field_blocks_its_own_socket_and_leaves_the_rest_alone():
     assert got["transcript"] == "", "an empty string breaks nothing downstream - leave it"
     assert packed["durations"] == [], "the pipe keeps the real value; only the socket is blocked"
 
+
+
+# --------------------------------------------------------------------------- the names
+
+
+def test_the_pipe_carries_the_names_this_run_writes_under():
+    """So a clip rendered by another subgraph can be saved into this run's own folder."""
+    fields = {item.name: item for item in pipe_module.FIELDS}
+    assert (fields["clip_prefixes"].kind, fields["clip_prefixes"].is_list) == ("String", True)
+    assert (fields["final_video_name"].kind, fields["final_video_name"].is_list) == ("String", False)
+
+
+def test_a_missing_name_is_an_empty_string_not_a_missing_key():
+    packed = pipe_module.pack(shot_index=[1])
+    assert packed["final_video_name"] == ""
+    assert packed["clip_prefixes"] == []

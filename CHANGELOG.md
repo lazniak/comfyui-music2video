@@ -20,6 +20,20 @@ as that version's release notes, so keep the heading format `## <version>`.
   to the model whole; `whisper_chunk_length_s` is only used when a slice really is longer than a
   chunk (`whisper_window_seconds = 0`), and the node then says once, in its own words, that word
   timings can drift around the seams.
+- **The pipe now carries the names this run writes under**: `clip_prefixes` (one
+  `filename_prefix` per shot, `music2prompts/<project>_v003/<prefix>_<stamp>_shot001`) and
+  `final_video_name` for the film. Wire them into the SaveVideo nodes of a render subgraph and
+  its clips land in this run's project folder, in shot order, under the same stamp as
+  everything else the run wrote. Leave the Concat node's `filename_prefix` empty and it takes
+  the film's name off the pipe by itself; both new fields come out of Pipe Expand as well.
+- Fixed: the Concat node crashed with `av.error.FileNotFoundError: [Errno 2] No such file or
+  directory` when `filename_prefix` carried a subfolder - the convention every ComfyUI save
+  node uses. PyAV opens the file at the first packet rather than at `av.open`, so a missing
+  folder surfaced from inside the muxer, naming no path, after every clip had already been
+  decoded and scaled. The folders a name asks for are created now, and nothing typed into that
+  widget can write outside ComfyUI's output folder.
+- The final film is written under the run's own timestamp instead of a fresh one, so its name
+  matches the clips it was cut from - and matches what the pipe says it is called.
 - New node: **🎵 Music2Video Concat**. Takes a list of VIDEO from anywhere in the graph -
   an LTX or Wan subgraph, a sampler, a load-from-disk node - and cuts it into one film,
   which the main node could only do for clips it had rendered itself. Optional `pipe`

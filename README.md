@@ -397,6 +397,8 @@ Everything in the pipe except `transcript` and `analysis_json` is a **list**.
 | `durations` | shots | Seconds, inside the `min_shot_seconds`…`max_shot_seconds` window |
 | `transcript` | — | Full transcription (empty for instrumentals) |
 | `audio_clips` | shots | The same per-shot **AUDIO** as socket 2, so a lipsync graph can take it off the pipe |
+| `clip_prefixes` | shots | The `filename_prefix` for each shot's clip — `music2prompts/<project>_v003/<prefix>_<stamp>_shot001` — so a clip rendered elsewhere in the graph saves into this run's folder, in shot order |
+| `final_video_name` | — | The `filename_prefix` for the finished film. Leave the Concat node's own `filename_prefix` empty and it takes this off the pipe |
 | `analysis_json` | — | Everything: BPM, beats, sections, treatment, art direction, subject bible, per-shot fields, what was rendered, and what it cost |
 
 > **Upgrading:** a workflow saved before the pipe existed loses the links to those twelve
@@ -424,6 +426,13 @@ drifts out of sync with the track as the errors accumulate; with it every cut la
 half a frame of where the beat grid put it. If a render failed the clip list is shorter than
 the shot list, the two no longer line up, and the node says so and falls back to the clips'
 own lengths rather than misaligning the whole film.
+
+**Leave `filename_prefix` empty** and the pipe names the film: it lands in that run's project
+folder, under that run's name, next to the clips it was cut from and the transcript. Type
+something there and yours wins, subfolders included (`films/tour`, the same convention every
+ComfyUI save node uses). The pipe also carries `clip_prefixes` — one per shot — so the SaveVideo
+node inside your render subgraph can write each clip into the same folder with the same run
+stamp, in shot order.
 
 Nothing is generated and nothing is billed — one muxing pass with PyAV, no ffmpeg binary.
 

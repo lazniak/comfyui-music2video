@@ -237,12 +237,16 @@ class Music2VideoConcat(io.ComfyNode):
                 ),
                 io.String.Input(
                     "filename_prefix",
-                    default="music2video",
+                    default="",
                     tooltip=(
-                        "Start of the filename. The film is written to "
-                        "ComfyUI/output/music2prompts as "
+                        "Start of the filename, written to ComfyUI/output/music2prompts as "
                         "<prefix>_<date>-<time>_concat.mp4, so a re-run never overwrites the "
-                        "last one."
+                        "last one. Subfolders are allowed, as in any ComfyUI save node "
+                        "('films/tour' writes into ComfyUI/output/films). "
+                        "Leave it empty and a connected 'pipe' names the film instead: it "
+                        "lands in that run's project folder under that run's name, next to "
+                        "the transcript and the clips ('final_video_name' on the pipe). "
+                        "Empty with no pipe falls back to 'music2video'."
                     ),
                 ),
             ],
@@ -279,14 +283,14 @@ class Music2VideoConcat(io.ComfyNode):
         width=0,
         height=0,
         crf=20,
-        filename_prefix="music2video",
+        filename_prefix="",
     ) -> io.NodeOutput:
         # is_input_list hands every input in as a list, widgets included
         clips = [item for item in (videos or []) if item is not None]
         pipe = _first(pipe)
         audio = _first(audio)
         mode = AUDIO_SOURCES.get(str(_first(audio_mode, "source audio")), "music")
-        prefix = str(_first(filename_prefix, "music2video") or "music2video")
+        prefix = str(_first(filename_prefix, "") or "").strip()
 
         if not clips:
             raise ValueError(
@@ -311,10 +315,11 @@ class Music2VideoConcat(io.ComfyNode):
         if not paths:
             raise ValueError(f"{PREFIX} none of the {len(clips)} clip(s) could be read as a file.")
 
-        target = os.path.join(
-            render_module.output_directory(),
-            f"{prefix}_{time.strftime('%Y%m%d-%H%M%S')}_concat.mp4",
-        )
+        # An empty prefix means "the pipe names it": the film then lands in that run's
+        # project folder under that run's name, beside the clips it was cut from.
+        from_pipe = str(pipe.get("final_video_name") or "") if isinstance(pipe, dict) else ""
+        stamped = f"{prefix or 'music2video'}_{time.strftime('%Y%m%d-%H%M%S')}_concat"
+        target = render_module.output_path(from_pipe if (not prefix and from_pipe) else stamped)
         log(f"joining {len(paths)} clip(s), audio: {mode}")
         try:
             info = video_module.concat_clips(

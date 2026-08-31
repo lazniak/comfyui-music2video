@@ -209,6 +209,32 @@ FIELDS: tuple[Field, ...] = (
         "the pipe next to the prompts instead of running a second wire across the canvas."
         ),
     ),
+    Field(
+        "clip_prefixes",
+        "String",
+        True,
+        (
+        "One 'filename_prefix' per shot, ready to drop into a SaveVideo (or SaveImage) node: "
+        "'music2prompts/<project>_v003/<filename_prefix>_<stamp>_shot001'. It is the same name "
+        "this node gives the clips it renders itself, so clips rendered elsewhere in the graph "
+        "- an LTX or Wan subgraph fed from these prompts - land in the same run's folder, in "
+        "shot order, next to the transcript and the analysis JSON. Relative to ComfyUI's output "
+        "folder with forward slashes, which is what the save nodes expect on every platform. "
+        "Always produced, whatever 'video_provider' is set to."
+        ),
+    ),
+    Field(
+        "final_video_name",
+        "String",
+        False,
+        (
+        "The 'filename_prefix' for the finished film: "
+        "'music2prompts/<project>_v003/<filename_prefix>_<stamp>_final'. Wire it into a "
+        "SaveVideo node - or leave the Music2Video Concat node's own 'filename_prefix' empty "
+        "and it reads this off the pipe by itself, so the film lands in the run's project "
+        "folder under the run's name instead of a folder of its own. Always produced."
+        ),
+    ),
 )
 
 #: Fast lookup, and the check the expander uses to reject a foreign dict.

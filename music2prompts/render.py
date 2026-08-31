@@ -208,6 +208,43 @@ def output_directory(subfolder: str = SUBFOLDER, temporary: bool = False) -> str
     return path
 
 
+def output_path(name: str, extension: str = "mp4") -> str:
+    """An absolute path under ComfyUI's output folder for a save-node style name.
+
+    ``name`` follows ComfyUI's own convention for ``filename_prefix``: a file name that
+    may carry subfolders ("video/ComfyUI", or a project folder off the pipe). Those
+    folders are created here. PyAV does not create them, and reports their absence from
+    inside the muxer as a bare ``[Errno 2] No such file or directory`` naming no path at
+    all - half an hour into a run, in the user's case.
+
+    Every component is sanitised the way a project folder is, so nothing typed into a
+    widget - '..', a drive letter, a character Windows refuses - writes outside the
+    output folder.
+    """
+    parts = [
+        cleaned
+        for part in re.split(r"[\\/]+", str(name or ""))
+        if (cleaned := _UNSAFE.sub("_", part).strip(" ."))
+    ]
+    filename = parts.pop() if parts else "music2video"
+    directory = output_directory(os.path.join(*parts) if parts else SUBFOLDER)
+    return os.path.join(directory, f"{filename}.{extension.lstrip('.')}")
+
+
+def save_prefix(folder: str, prefix: str, stamp: str, kind: str = "", index: int | None = None) -> str:
+    """The ``filename_prefix`` a save node needs to write next to this run's own files.
+
+    The same shape :func:`save_media` gives the files it writes itself, so a clip
+    rendered elsewhere in the graph lands in the run's folder under the run's name.
+    Relative to the output folder and with forward slashes, which is what ComfyUI's save
+    nodes expect on every platform.
+    """
+    name = f"{prefix}_{stamp}" if stamp else str(prefix)
+    if kind:
+        name += f"_{kind}" + ("" if index is None else f"{index:03d}")
+    return "/".join(part for part in (str(folder).replace(os.sep, "/").strip("/"), name) if part)
+
+
 def _in_parallel(
     jobs: list[Callable[[], Any]],
     concurrency: int,
