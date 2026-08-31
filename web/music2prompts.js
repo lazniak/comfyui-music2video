@@ -38,6 +38,7 @@ import { app } from "../../scripts/app.js";
 const NODE_ID = "Music2PromptsLM";
 const CONCAT_ID = "Music2VideoConcat";
 const RESOLUTION_ID = "Music2VideoResolution";
+const MOTION_ID = "Music2VideoMotion";
 const ROUTE = "/music2prompts/models";
 const PIPE_TYPE = "M2P_PIPE";
 
@@ -343,6 +344,24 @@ app.registerExtension({
         };
       } catch (error) {
         console.warn("[Music2Video] resolution node behaviour disabled:", error);
+      }
+      return;
+    }
+    if (node.comfyClass === MOTION_ID) {
+      // the same widget names as the main node, so the same rules hide the same things
+      try {
+        watch(node, "llm_provider");
+        refresh(node);
+        fetchLists().then((lists) => applyLists(node, lists));
+        const onConfigure = node.onConfigure;
+        node.onConfigure = function (...args) {
+          const result = onConfigure?.apply(this, args);
+          refresh(this);
+          fitLater(this);
+          return result;
+        };
+      } catch (error) {
+        console.warn("[Music2Video] motion node behaviour disabled:", error);
       }
       return;
     }

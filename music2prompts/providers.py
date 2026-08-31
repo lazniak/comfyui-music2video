@@ -390,6 +390,30 @@ class AnthropicClient(_CloudClient):
             raise ProviderError(f"{exc}; reply began: {text[:200]!r}") from exc
 
 
+def pick_model(
+    provider: str,
+    local_model: str,
+    cloud_models: dict[str, str],
+    keys: dict[str, str],
+) -> tuple[str, str]:
+    """Model key and API key for the selected provider.
+
+    Shared by every node that talks to an LLM, so they all fail the same way when a
+    dropdown was empty at load time - which is what "(none found)" means.
+    """
+    provider = (provider or "lmstudio").strip().lower()
+    if provider == "lmstudio":
+        return (local_model or "").strip(), keys.get("lmstudio", "")
+    model = (cloud_models.get(provider) or "").strip()
+    if not model or model.startswith("("):
+        raise ProviderError(
+            f"{PREFIX} pick a model for '{provider}' ({provider}_model). The list was "
+            "empty when the node was loaded - add the API key, then right-click the node "
+            "and choose 'Refresh model lists'."
+        )
+    return model, keys.get(provider, "")
+
+
 def make_llm_client(
     provider: str,
     *,

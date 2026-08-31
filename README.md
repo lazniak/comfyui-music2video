@@ -410,6 +410,55 @@ order it answered in is used instead.
 > sockets, and the links to the media sockets move up with them. Re-wire the media
 > outputs, then take the rest off a Pipe Expand node.
 
+### Putting values back
+
+**🎵 Music2Video Pipe Collapse** is Pipe Expand read backwards. Expand takes the pipe
+apart so a value can be *used*; Collapse takes values back in so a value can be *changed* —
+prompts you edited by hand, a translation, a filtered set of shots, whatever another node
+produced. Wire the pipe you started from into `pipe` and only the sockets you actually
+changed; everything left unwired comes through from that pipe untouched, so the run's
+timings, transcript and per-shot audio stay on the wire with your edit.
+
+With nothing wired into `pipe` it builds one from nothing — that is how you make a pipe for
+a graph that never ran the Music2Video node, for instance to feed the Concat node shot
+durations of your own. It calls nothing and costs nothing.
+
+```
+Music2Video ─ pipe ─┬─ Pipe Expand ─ video_prompts_i2va ─ (your edit) ─┐
+                    └───────────────── pipe ──────────── Pipe Collapse ┴─ pipe ─ …
+```
+
+### Correcting the prompts against the frames
+
+The video prompts are written before a single pixel exists. The LLM describes what it
+*intends* the first frame to contain, the image model then draws its own reading of that
+description, and nothing compares the two. Whatever came out instead — a different framing,
+one subject where the prompt said two, a coat that turned out red — the video prompt still
+describes the intention, and MiniMax H3 resolves the disagreement the only way it can: it
+starts on the frame it was handed and dissolves into the scene it was told about.
+
+**🎵 Music2Video Motion Enhancer** closes that loop. Give it the `pipe` and the
+rendered start frames and it shows each frame to a vision-capable LLM together with that
+shot's own i2va prompt, then rewrites the description so it describes *that* frame — and so
+the motion in it fits the shot's real length: the word budget is `words_per_second` × the
+shot's duration, which is what stops a six-second shot being described as a minute of
+events. The H3 skeleton, the `<Picture 1>` line and the two sound fields are kept
+(`rewrite_sound` opts the sound in), so what comes back is the same prompt with its picture
+of the world corrected.
+
+```
+Music2Video ─ pipe ───────────┐
+              images ─ (your sampler) ─ Motion Enhancer ─ pipe ─ … ─ your H3 render
+```
+
+It takes the same four providers as the main node and needs a **vision** model on whichever
+one you pick — a text-only model describes nothing and every shot keeps its original prompt.
+One call per shot: free on `lmstudio`, billed per token on the cloud providers, and the panel
+under the node reports what it cost. `image_detail` is the longest side of the frame as it is
+sent, and on a cloud provider it is most of the bill. Fewer frames than shots is fine — a
+shot without one keeps its prompt — and so is a shot whose call fails; `report` gives one
+line per shot saying what disagreed with the frame, or what went wrong.
+
 ### Cutting clips you rendered yourself
 
 The main node only assembles what **it** rendered. If the clips come from somewhere else in

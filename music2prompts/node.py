@@ -24,7 +24,7 @@ from . import video as video_module
 from .h3_format import H3Shot, Speaker, Subject, render_i2va, render_ref2va
 from .llm_stages import StageRunner, load_h3_guide
 from .lmstudio import DEFAULT_URL, FALLBACK_MODELS, LMStudioClient
-from .providers import LLM_PROVIDERS, make_llm_client
+from .providers import LLM_PROVIDERS, make_llm_client, pick_model
 from .render import MEDIA_PROVIDERS, ImageRequest, VideoRequest
 from .video import AUDIO_MODES, FIT_MODES
 from .shots import ShotSlot, attach_lyrics, plan_shots
@@ -2000,24 +2000,8 @@ io.Boolean.Input(
 
     # ------------------------------------------------------------------ helpers
 
-    @staticmethod
-    def _pick_model(
-        provider: str,
-        local_model: str,
-        cloud_models: dict[str, str],
-        keys: dict[str, str],
-    ) -> tuple[str, str]:
-        """Model key and API key for the selected provider."""
-        if provider == "lmstudio":
-            return (local_model or "").strip(), keys.get("lmstudio", "")
-        model = (cloud_models.get(provider) or "").strip()
-        if not model or model.startswith("("):
-            raise ValueError(
-                f"{PREFIX} pick a model for '{provider}' ({provider}_model). The list was "
-                "empty when the node was loaded - add the API key, then right-click the node "
-                "and choose 'Refresh model lists'."
-            )
-        return model, keys.get(provider, "")
+    #: Shared with the other nodes that talk to an LLM, so they all fail the same way.
+    _pick_model = staticmethod(pick_model)
 
     @staticmethod
     def _fit_shots_to_model(

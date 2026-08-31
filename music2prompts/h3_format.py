@@ -390,6 +390,55 @@ def _style_line(shot: H3Shot) -> str:
 # --------------------------------------------------------------------------- I2VA
 
 
+#: The line H3 reads as "the attached image is the first frame". Not decoration.
+I2VA_HEADER = (
+    "For the target video, at 0.00 seconds into the target video, "
+    "<Picture 1> (from [Shot 1]) is fully referenced."
+)
+
+I2VA_FIELDS = ("integrated_multimodal_description", "overall_soundscape", "non_diegetic_music")
+
+
+def assemble_i2va(description: str, soundscape: str, music: str) -> str:
+    """Build an i2va prompt from its three bodies, skeleton and all.
+
+    The skeleton is what H3 parses, so it is written here and nowhere else: a stage that
+    rewrites one of the three fields rebuilds the prompt through this rather than by
+    string surgery on the last one.
+    """
+    return (
+        f"{I2VA_HEADER}\n"
+        "\n"
+        f"integrated_multimodal_description: {str(description).strip()}\n"
+        "\n"
+        f"overall_soundscape: {str(soundscape).strip()}\n"
+        "\n"
+        f"non_diegetic_music: {str(music).strip()}"
+    )
+
+
+def split_i2va(text: str) -> dict[str, str]:
+    """The three field bodies of an i2va prompt, so one can be rewritten and the rest kept.
+
+    Anything before the first label is dropped: that is the header, and
+    :func:`assemble_i2va` writes it back. A prompt this cannot read comes back whole under
+    'integrated_multimodal_description', which is the field a caller means to rewrite anyway.
+    """
+    found: dict[str, str] = {}
+    positions = [
+        (name, match)
+        for name in I2VA_FIELDS
+        if (match := re.search(rf"^{name}:", text or "", re.M))
+    ]
+    positions.sort(key=lambda item: item[1].start())
+    for order, (name, match) in enumerate(positions):
+        end = positions[order + 1][1].start() if order + 1 < len(positions) else len(text)
+        found[name] = text[match.end() : end].strip()
+    if not found:
+        return {I2VA_FIELDS[0]: str(text or "").strip(), I2VA_FIELDS[1]: "", I2VA_FIELDS[2]: ""}
+    return {name: found.get(name, "") for name in I2VA_FIELDS}
+
+
 def render_i2va(shot: H3Shot) -> str:
     """Render an image-to-video prompt whose first frame is the generated start frame."""
     opening = _lower_first(
@@ -409,16 +458,7 @@ def render_i2va(shot: H3Shot) -> str:
     if cuts:
         body = f"{body} {cuts}"
 
-    return (
-        "For the target video, at 0.00 seconds into the target video, "
-        "<Picture 1> (from [Shot 1]) is fully referenced.\n"
-        "\n"
-        f"integrated_multimodal_description: {body}\n"
-        "\n"
-        f"overall_soundscape: {_soundscape(shot)}\n"
-        "\n"
-        f"non_diegetic_music: {_music(shot)}"
-    )
+    return assemble_i2va(body, _soundscape(shot), _music(shot))
 
 
 # --------------------------------------------------------------------------- Ref2VA

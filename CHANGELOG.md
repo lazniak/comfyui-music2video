@@ -5,6 +5,25 @@ as that version's release notes, so keep the heading format `## <version>`.
 
 ## 1.2.0
 
+- New node: **🎵 Music2Video Motion Enhancer**. The video prompts are written before a
+  single pixel exists, so whatever the image model actually drew - a different framing, one
+  subject instead of two, another colour - the prompt still describes the intention, and H3
+  resolves that disagreement by starting on the frame it was handed and dissolving into the
+  scene it was told about. This node closes the loop: wire the pipe and the rendered start
+  frames into it and it shows each frame to a vision-capable LLM together with that shot's own
+  i2va prompt, and asks for the description to be rewritten to match the frame - and to hold
+  only as much motion as the shot's real duration can carry (`words_per_second` x the shot
+  length, so a six-second shot stops being described as a minute of events). The H3 skeleton,
+  the `<Picture 1>` reference and the sound fields are kept, so what comes back is the same
+  prompt with its picture of the world corrected. Same four providers as the main node, one
+  call per shot, and a shot that fails keeps the prompt it had. `report` says what disagreed.
+- New node: **🎵 Music2Video Pipe Collapse** - Pipe Expand read backwards. Expand takes
+  the pipe apart so a value can be used; this takes values back in so a value can be *changed*.
+  Wire the pipe you started from and only the sockets you actually edited: everything left
+  unwired comes through untouched, so hand-edited prompts, a translation or another node's
+  output go back on the wire with the run's timings, transcript and per-shot audio still on it.
+  With no pipe wired it builds one from nothing, which is how a pipe is made for a graph that
+  never ran the Music2Video node.
 - **Cancel stops the run now**, instead of at the end of whatever was running. Whisper is
   given a stopping rule so a cancel ends the decode inside the current window; the LLM
   call runs on a worker thread, so an HTTP request already in flight no longer holds the

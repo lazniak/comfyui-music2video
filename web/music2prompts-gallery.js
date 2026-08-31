@@ -61,6 +61,8 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const NODE_ID = "Music2PromptsLM";
+//: nodes that spend money but show nothing - they get the cost panel and no gallery
+const COST_ONLY = new Set(["Music2VideoMotion"]);
 const EVENT = "music2prompts/preview";
 const COST_EVENT = "music2prompts/cost";
 const WIDGET = "m2p_gallery";
@@ -576,9 +578,10 @@ app.registerExtension({
   },
 
   async nodeCreated(node) {
-    if (node.comfyClass !== NODE_ID) return;
+    const costOnly = COST_ONLY.has(node.comfyClass);
+    if (node.comfyClass !== NODE_ID && !costOnly) return;
     try {
-      const gallery = galleryOf(node);
+      const gallery = costOnly ? null : galleryOf(node);
       // widget order is creation order, so this lands under the previews
       const cost = costOf(node);
 
@@ -586,7 +589,7 @@ app.registerExtension({
       const onExecuted = node.onExecuted;
       node.onExecuted = function (message) {
         const result = onExecuted?.apply(this, arguments);
-        if (message?.m2p_preview?.length) {
+        if (gallery && message?.m2p_preview?.length) {
           gallery.fill(message.m2p_preview);
           gallery.setVisible(true);
         }
@@ -596,7 +599,7 @@ app.registerExtension({
 
       const onRemoved = node.onRemoved;
       node.onRemoved = function () {
-        galleries.delete(gallery);
+        if (gallery) galleries.delete(gallery);
         panels.delete(cost);
         delete node._m2pGallery;
         delete node._m2pCost;

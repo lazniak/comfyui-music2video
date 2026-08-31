@@ -51,8 +51,10 @@ async def comfy_entrypoint():
             "Update ComfyUI to a recent version and restart."
         ) from exc
 
+    from .music2prompts.collapse import Music2PromptsPipeCollapse
     from .music2prompts.concat import Music2VideoConcat
     from .music2prompts.expand import Music2PromptsPipeExpand
+    from .music2prompts.motion import Music2VideoMotion
     from .music2prompts.node import Music2PromptsLM
     from .music2prompts.resolution import Music2VideoResolution
 
@@ -61,6 +63,8 @@ async def comfy_entrypoint():
             return [
                 Music2PromptsLM,
                 Music2PromptsPipeExpand,
+                Music2PromptsPipeCollapse,
+                Music2VideoMotion,
                 Music2VideoConcat,
                 Music2VideoResolution,
             ]
