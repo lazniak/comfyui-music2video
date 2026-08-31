@@ -224,26 +224,48 @@ def transcribe(
     }
 
     if window < 5.0 or duration <= window + WINDOW_SLACK:
-        return _normalize(_transcribe_slice(samples, 0.0, context), language)
+        whole = _normalize(_transcribe_slice(samples, 0.0, context), language)
+        log(f"transcribed {duration:.0f}s in one pass: {len(whole['text'])} chars, {len(whole['words'])} word(s)")
+        return whole
 
     windows = int(duration // window) + (1 if duration % window > 1.0 else 0)
     log(f"transcribing {duration:.0f}s in {windows} window(s) of {window:.0f}s")
     texts: list[str] = []
     words: list[dict] = []
     offset = 0.0
+    empty = 0
+    number = 0
     while offset < duration - 1.0:
         raise_if_interrupted()
         end = min(duration, offset + window)
         piece = samples[int(offset * sample_rate) : int(end * sample_rate)]
         if len(piece) < sample_rate // 2:
             break
+        number += 1
         part = _normalize(_transcribe_slice(piece, offset, context), language)
+        # per window, because a window that comes back empty is invisible in the joined
+        # text: what is left reads like a complete transcript of the first part of the track
+        log(
+            f"window {number}/{windows} ({offset:.0f}-{end:.0f}s): "
+            f"{len(part['text'])} chars, {len(part['words'])} word(s)"
+            + ("" if part["text"] else " - nothing came back")
+        )
         if part["text"]:
             texts.append(part["text"])
+        else:
+            empty += 1
         words.extend(part["words"])
         offset = end
 
     text = " ".join(texts).strip()
+    if empty:
+        # not necessarily wrong - an instrumental passage has nothing to transcribe - but
+        # every silent window is a piece of the track the shots downstream know nothing about
+        warn(
+            f"{empty} of {number} window(s) returned no text; the transcript covers "
+            f"{number - empty} window(s) of the {duration:.0f}s track"
+        )
+    log(f"transcript assembled from {len(texts)} window(s): {len(text)} chars, {len(words)} word(s)")
     return {"text": text, "language": _language_of(text, language), "words": words}
 
 

@@ -24,6 +24,10 @@ as that version's release notes, so keep the heading format `## <version>`.
   output go back on the wire with the run's timings, transcript and per-shot audio still on it.
   With no pipe wired it builds one from nothing, which is how a pipe is made for a graph that
   never ran the Music2Video node.
+- Transcription now says what each window returned - `window 3/6 (60-90s): 412 chars, 78
+  word(s)` - and warns when a window comes back with nothing. A silent window is invisible in
+  the joined transcript: what is left reads like a complete transcription of the first part of
+  the track, with no sign that the rest is missing.
 - **Cancel stops the run now**, instead of at the end of whatever was running. Whisper is
   given a stopping rule so a cancel ends the decode inside the current window; the LLM
   call runs on a worker thread, so an HTTP request already in flight no longer holds the

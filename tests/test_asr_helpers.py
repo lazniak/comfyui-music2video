@@ -158,3 +158,61 @@ def test_batching_is_dropped_where_there_is_nothing_to_batch(monkeypatch):
     assert all(step[2] == 1 for step in ladder)
     assert "batch_size" not in slice_with(monkeypatch, seconds=30, batch_size=4)
     assert asr_module.WINDOW_SLACK == 5.0
+
+
+# --------------------------------------------------------------------------- window assembly
+
+
+def transcribe_windows(monkeypatch, caplog, replies, seconds=120.0, window=30.0):
+    """Run the windowed path with a canned answer per window, and return (result, log)."""
+    import logging
+
+    from music2prompts import asr as asr_module
+
+    monkeypatch.setattr(asr_module, "resolve_device", lambda choice: ("cpu", "float32"))
+    monkeypatch.setattr(asr_module, "ensure_model_files", lambda repo_id: "m")
+    monkeypatch.setattr(asr_module, "_build_pipeline", lambda *a, **k: FakePipe())
+
+    seen: list[float] = []
+
+    def fake_slice(samples, offset, context):
+        seen.append(offset)
+        text = replies[len(seen) - 1]
+        return {"text": text, "chunks": [{"text": text, "timestamp": (0.0, 1.0)}] if text else []}
+
+    monkeypatch.setattr(asr_module, "_transcribe_slice", fake_slice)
+    with caplog.at_level(logging.INFO):
+        result = asr_module.transcribe(
+            [0.0] * int(seconds * 16000), window_seconds=window, keep_loaded=True
+        )
+    return result, caplog.text
+
+
+def test_every_window_ends_up_in_the_transcript(monkeypatch, caplog):
+    """The joined text is the whole track, not the first window that happened to work."""
+    result, _ = transcribe_windows(monkeypatch, caplog, ["one", "two", "three", "four"])
+    assert result["text"] == "one two three four"
+    assert len(result["words"]) == 4
+
+
+def test_a_window_that_comes_back_empty_is_said_out_loud(monkeypatch, caplog):
+    """Otherwise it is invisible: what is left reads like a complete transcript of the start."""
+    result, text = transcribe_windows(monkeypatch, caplog, ["one", "", "", "four"])
+
+    assert result["text"] == "one four", "the empty ones are skipped, not padded"
+    assert "2 of 4 window(s) returned no text" in text
+    assert "nothing came back" in text
+
+
+def test_each_window_reports_its_own_range_and_size(monkeypatch, caplog):
+    _, text = transcribe_windows(monkeypatch, caplog, ["one", "two", "three", "four"])
+    assert "window 1/4 (0-30s)" in text
+    assert "window 4/4 (90-120s)" in text
+    assert "transcript assembled from 4 window(s)" in text
+
+
+def test_a_track_short_enough_for_one_pass_reports_that_too(monkeypatch, caplog):
+    result, text = transcribe_windows(monkeypatch, caplog, ["all of it"], seconds=30.0)
+    assert result["text"] == "all of it"
+    assert "in one pass" in text
+    assert "window 1/" not in text, "there were no windows"
