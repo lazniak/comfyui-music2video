@@ -197,6 +197,40 @@ SCHEMA_IMAGE_DESCRIPTIONS = _object(
 # --------------------------------------------------------------------------- runner
 
 
+def pair_with_shots(batch: list[Any], items: list[dict], stage: str = "") -> list[tuple[Any, dict | None]]:
+    """Match what the model wrote to the shots it was asked to write about.
+
+    Every batched stage sends a list of shots, each carrying its own number, and asks for
+    one object per shot echoing that number back. Whether the right number comes back is
+    the question. A model that renumbers each batch from 1, or slips by one, hands every
+    shot its neighbour's description - and because the shot text and the image prompt are
+    two separate calls, they can slip differently. The result is a start frame showing one
+    thing and a video prompt describing another, which is exactly what a video model then
+    dissolves between.
+
+    So the numbers are trusted only when they are precisely the ones that were sent, which
+    also covers a model that answered out of order. Otherwise the order is used: a model
+    that gets the numbering wrong still writes the shots in the order it was given them.
+    """
+    wanted = [slot.index for slot in batch]
+    numbers = [int(item.get("shot", 0) or 0) for item in items]
+    if len(items) == len(batch):
+        if sorted(numbers) == sorted(wanted):
+            by_number = dict(zip(numbers, items))
+            return [(slot, by_number[slot.index]) for slot in batch]
+        warn(
+            f"{stage or 'a stage'} numbered its shots {numbers} when it was asked for {wanted}; "
+            "going by the order they came back in instead"
+        )
+        return list(zip(batch, items))
+    if items:
+        warn(f"{stage or 'a stage'} answered for {len(items)} of the {len(batch)} shot(s) it was sent")
+    by_number: dict[int, dict] = {}
+    for number, item in zip(numbers, items):
+        by_number.setdefault(number, item)
+    return [(slot, by_number.get(slot.index)) for slot in batch]
+
+
 class StageRunner:
     """Runs the LLM stages against one LM Studio model."""
 
@@ -415,6 +449,8 @@ class StageRunner:
                     if include_dialogue
                     else "Leave 'dialogue' empty and dialogue_mode 'none'."
                 )
+                + f" Return exactly {len(batch)} shots, in the order they are listed above, each "
+                "echoing its own 'shot' number unchanged."
             )
             try:
                 data = self._call(system, user, SCHEMA_SHOTS, stage=f"shot content {position}")
@@ -422,11 +458,8 @@ class StageRunner:
                 warn(f"shot batch {position} failed ({exc}); using a neutral fallback for it")
                 data = {"shots": []}
 
-            returned = {int(item.get("shot", 0)): item for item in as_list(data.get("shots")) if isinstance(item, dict)}
-            for offset, slot in enumerate(batch):
-                item = returned.get(slot.index)
-                if item is None and len(returned) == len(batch):
-                    item = list(returned.values())[offset]
+            items = [item for item in as_list(data.get("shots")) if isinstance(item, dict)]
+            for slot, item in pair_with_shots(batch, items, f"shot content {position}"):
                 results[slot.index] = item or {}
         return results
 
@@ -468,23 +501,18 @@ class StageRunner:
                 f"LOOK:\n{json.dumps(art, ensure_ascii=False)}\n\n"
                 f"IDENTITY LOCK:\n{identity}\n\n"
                 f"SHOTS:\n{payload}\n\n"
-                f"Frame everything for a {aspect_ratio} image. Write the first frame of each shot as a still."
+                f"Frame everything for a {aspect_ratio} image. Write the first frame of each shot as a still. "
+                f"Return exactly {len(batch)} prompts, in the same order as SHOTS, each echoing its "
+                "own 'shot' number unchanged."
             )
             try:
                 data = self._call(system, user, SCHEMA_IMAGE_PROMPTS, stage=f"image prompts {position}")
             except Exception as exc:
                 warn(f"image prompt batch {position} failed ({exc}); falling back to shot text")
                 data = {"prompts": []}
-            returned = {
-                int(item.get("shot", 0)): str(item.get("prompt", ""))
-                for item in as_list(data.get("prompts"))
-                if isinstance(item, dict)
-            }
-            for offset, slot in enumerate(batch):
-                prompt = returned.get(slot.index)
-                if not prompt and len(returned) == len(batch):
-                    prompt = list(returned.values())[offset]
-                results[slot.index] = prompt or ""
+            items = [item for item in as_list(data.get("prompts")) if isinstance(item, dict)]
+            for slot, item in pair_with_shots(batch, items, f"image prompts {position}"):
+                results[slot.index] = str((item or {}).get("prompt", "") or "")
         return results
 
     def reference_prompts(self, subjects: list[dict], art: dict, aspect_ratio: str) -> dict[str, str]:

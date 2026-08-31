@@ -20,6 +20,19 @@ as that version's release notes, so keep the heading format `## <version>`.
   to the model whole; `whisper_chunk_length_s` is only used when a slice really is longer than a
   chunk (`whisper_window_seconds = 0`), and the node then says once, in its own words, that word
   timings can drift around the seams.
+- **Fixed: a shot's start frame and its video prompt could describe different scenes.**
+  Both the shot-content stage and the image-prompt stage send the shots in batches and ask
+  the model to echo each shot's number back, and both then trusted that number. A model
+  that renumbers each batch from 1, or slips by one, therefore handed a shot its
+  neighbour's description - and because the two stages are separate calls, they slipped
+  differently: the image showed one thing, the video prompt described another, and the
+  video model dissolved from the frame it was given into the scene it was told about. The
+  numbers are now used only when they are exactly the ones that were sent (which still
+  covers a model answering out of order); otherwise the order is used, because a model
+  that gets the numbering wrong still writes the shots in the order it was asked for. When
+  that happens the log says so, so a model that cannot count is visible rather than
+  silently misaligning the film. Both stages now also state the expected count and order in
+  the request.
 - **The pipe now carries the names this run writes under**: `clip_prefixes` (one
   `filename_prefix` per shot, `music2prompts/<project>_v003/<prefix>_<stamp>_shot001`) and
   `final_video_name` for the film. Wire them into the SaveVideo nodes of a render subgraph and

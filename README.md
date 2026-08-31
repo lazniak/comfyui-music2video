@@ -383,6 +383,11 @@ and buy nothing.
 
 Everything in the pipe except `transcript` and `analysis_json` is a **list**.
 
+Every per-shot list is aligned by position: `image_prompts_start[3]`, `video_prompts_i2va[3]`,
+`durations[3]` and `audio_clips[3]` are all about the same shot, whatever the LLM did with the
+shot numbers it was asked to echo back. If a model renumbers them, the log says so and the
+order it answered in is used instead.
+
 | Field | Aligned with | Contents |
 |---|---|---|
 | `image_prompts_start` | shots | Natural-language cinematic prompt for the first frame of each shot (Flux / Qwen-Image / Z-Image style) |

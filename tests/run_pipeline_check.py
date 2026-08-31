@@ -28,11 +28,26 @@ def make_audio(seconds: float = TRACK_SECONDS, sample_rate: int = 22050) -> dict
 
 
 def run_pipeline(**overrides):
+    import tempfile
+
     from music2prompts import node as node_module
+    from music2prompts import render as render_module
     from music2prompts.node import Music2PromptsLM
 
     node_module.LMStudioClient = FakeClient  # type: ignore[assignment]
     node_module.make_llm_client = lambda provider, **kwargs: FakeClient()  # type: ignore[assignment]
+
+    # This harness is meant to be run with ComfyUI on PYTHONPATH, which makes
+    # `folder_paths` importable - and then every check writes its analysis, transcript and
+    # cost report into the user's real ComfyUI output folder. Somewhere else, then.
+    room = tempfile.mkdtemp(prefix="m2v_check_")
+
+    def elsewhere(subfolder=render_module.SUBFOLDER, temporary=False):
+        path = os.path.join(room, "temp" if temporary else "output", subfolder)
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    render_module.output_directory = elsewhere
 
     kwargs = dict(
         audio=make_audio(),
