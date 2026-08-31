@@ -22,16 +22,22 @@
  * 4. Rewrite renamed widget values on load, so a workflow saved before a rename still
  *    passes the server's combo validation.
  *
- * 5. On the concat node, hide the two mix gains unless the audio mode is actually "mix".
+ * 5. On the concat node, hide the two mix gains unless the audio mode is actually "mix",
+ *    and on the resolution node, the typed ratio unless the preset is "custom".
  *
  * 6. Put a saved workflow's widget values back where they belong when new widgets have
  *    been inserted above them since it was saved.
+ *
+ * 7. Shrink the node back onto its visible widgets. Nothing in the frontend does this -
+ *    its own helper only ever grows - so a node with eighty-odd widgets, most of them
+ *    hidden or advanced, keeps the height it had when they were all on show.
  */
 
 import { app } from "../../scripts/app.js";
 
 const NODE_ID = "Music2PromptsLM";
 const CONCAT_ID = "Music2VideoConcat";
+const RESOLUTION_ID = "Music2VideoResolution";
 const ROUTE = "/music2prompts/models";
 const PIPE_TYPE = "M2P_PIPE";
 
@@ -104,6 +110,36 @@ function invalidate(node) {
   node.setDirtyCanvas?.(true, true);
 }
 
+/** Shrink the node back onto the widgets it is actually showing.
+ *
+ * The frontend leaves a hidden widget out of `computeSize` (`isWidgetVisible` skips
+ * anything with `hidden` set, and anything advanced while the advanced section is
+ * collapsed) - but nothing shrinks the node afterwards. Its own helper only grows:
+ * `expandToFitContent()` is `Math.max` on both axes, and it is what the advanced toggle
+ * calls. So the height stays whatever it was when every widget was on show, and on a node
+ * with eighty-odd of them that is most of the screen. The multiline `instruction` widget
+ * then absorbs the difference, because a DOM widget is given the node's spare height - a
+ * text box tall enough to push the rest of the node off the canvas.
+ *
+ * The width is only ever grown: it is the one dimension a user sets deliberately.
+ */
+function fit(node) {
+  try {
+    const size = node.computeSize?.();
+    if (!size) return;
+    node.setSize([Math.max(node.size[0], size[0]), size[1]]);
+    node.setDirtyCanvas?.(true, true);
+  } catch (error) {
+    console.warn("[Music2Video] could not fit the node to its widgets:", error);
+  }
+}
+
+/** Fit once the graph has finished applying the size saved in the workflow. */
+function fitLater(node) {
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => fit(node));
+  else fit(node);
+}
+
 function setVisible(widget, visible) {
   if (!widget) return false;
   let changed = false;
@@ -148,7 +184,10 @@ function refresh(node) {
     changed = setVisible(widgets.openrouter_api_key, true) || changed;
   }
 
-  if (changed) invalidate(node);
+  if (changed) {
+    invalidate(node);
+    fit(node);
+  }
   return changed;
 }
 
@@ -227,8 +266,21 @@ function refreshConcat(node) {
   for (const name of ["music_gain", "clip_gain"]) {
     changed = setVisible(widgets[name], mixing) || changed;
   }
-  if (changed) invalidate(node);
+  if (changed) {
+    invalidate(node);
+    fit(node);
+  }
   return changed;
+}
+
+/** The resolution node: the typed ratio means nothing unless the preset is "custom". */
+function refreshResolution(node) {
+  const widget = widgetsOf(node).custom_ratio;
+  const custom = String(widgetsOf(node).aspect_ratio?.value ?? "") === "custom";
+  if (setVisible(widget, custom)) {
+    invalidate(node);
+    fit(node);
+  }
 }
 
 function watch(node, name, apply = refresh) {
@@ -270,10 +322,27 @@ app.registerExtension({
         node.onConfigure = function (...args) {
           const result = onConfigure?.apply(this, args);
           refreshConcat(this);
+          fitLater(this);
           return result;
         };
       } catch (error) {
         console.warn("[Music2Video] concat node behaviour disabled:", error);
+      }
+      return;
+    }
+    if (node.comfyClass === RESOLUTION_ID) {
+      try {
+        watch(node, "aspect_ratio", refreshResolution);
+        refreshResolution(node);
+        const onConfigure = node.onConfigure;
+        node.onConfigure = function (...args) {
+          const result = onConfigure?.apply(this, args);
+          refreshResolution(this);
+          fitLater(this);
+          return result;
+        };
+      } catch (error) {
+        console.warn("[Music2Video] resolution node behaviour disabled:", error);
       }
       return;
     }
@@ -290,6 +359,9 @@ app.registerExtension({
         realign(this, args[0]);  // before migrate: it reads the provider values
         migrate(this);
         refresh(this);
+        // the saved height was applied by configure() a moment ago, and it was saved
+        // from a node that had never been shrunk either
+        fitLater(this);
         return result;
       };
 

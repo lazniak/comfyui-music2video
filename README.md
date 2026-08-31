@@ -436,6 +436,20 @@ stamp, in shot order.
 
 Nothing is generated and nothing is billed — one muxing pass with PyAV, no ffmpeg binary.
 
+### Sizing the frames
+
+**🎵 Music2Video Resolution** is ComfyUI's own *Resolution Selector* — same arithmetic, same
+preset list, verified against it across every preset, megapixel and multiple — with two things
+added:
+
+* **`custom`** in the ratio dropdown, and a `custom_ratio` box to type one no preset covers:
+  `21:10`, `5:4`, `2.39` (cinemascope, same as `2.39:1`), or `1920x1080`, which is read as the
+  ratio it reduces to. Only the shape is taken from it — `megapixels` decides the size.
+* a third output, **`aspect_ratio`**, carrying that ratio in plain `W:H` form. Wire it into the
+  main node's `aspect_ratio` input and the shape of the latent and the shape the prompts are
+  written for cannot drift apart. A ratio arriving down a wire is not held to that widget's six
+  presets, so a custom one reaches the prompts and the render payloads as typed.
+
 ### Wiring examples
 
 All of these start with `pipe` → **Music2Video Pipe Expand**; the field names below are

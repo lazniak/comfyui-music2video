@@ -34,6 +34,17 @@ as that version's release notes, so keep the heading format `## <version>`.
   widget can write outside ComfyUI's output folder.
 - The final film is written under the run's own timestamp instead of a fresh one, so its name
   matches the clips it was cut from - and matches what the pipe says it is called.
+- New node: **🎵 Music2Video Resolution** - ComfyUI's own Resolution Selector, the arithmetic
+  checked against it across every preset, megapixel and multiple, plus a `custom` ratio you can
+  type (`21:10`, `2.39`, `1920x1080`) and an `aspect_ratio` output that plugs into the main
+  node's own `aspect_ratio` input, so the shape of the latent and the shape the prompts are
+  written for cannot drift apart.
+- Fixed: the node was drawn far taller than its widgets needed, with the `instruction` box
+  stretched over most of it. Hiding a widget takes it out of ComfyUI's size calculation, but
+  nothing shrinks the node afterwards - its own helper only ever grows - so the height stayed
+  what it was when all eighty-odd widgets were on show, and the multiline widget absorbed the
+  slack. The node now fits itself to what it is showing, on load and whenever a provider
+  changes.
 - New node: **🎵 Music2Video Concat**. Takes a list of VIDEO from anywhere in the graph -
   an LTX or Wan subgraph, a sampler, a load-from-disk node - and cuts it into one film,
   which the main node could only do for clips it had rendered itself. Optional `pipe`

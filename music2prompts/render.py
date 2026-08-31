@@ -154,6 +154,59 @@ def aspect_to_size(aspect_ratio: str, base: int = 1024) -> tuple[int, int]:
     return snap(width), snap(height)
 
 
+#: What the main node's 'aspect_ratio' widget accepts, so a ratio can be wired into it.
+ASPECT_RATIO_OPTIONS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]
+
+
+def parse_ratio(text: str) -> tuple[float, float]:
+    """Read a ratio a user typed. Raises ValueError rather than guessing.
+
+    Takes the forms people actually write: ``21:10``, ``21x10``, ``21/10``,
+    ``1920x1080``, ``2.39``, ``2.39:1``. Unlike :func:`aspect_to_size`, which has to keep
+    a render going and falls back to 16:9, this one is reading a text box - silently
+    rendering the wrong shape would be worse than saying so.
+    """
+    cleaned = str(text or "").strip().lower().replace(" ", "")
+    if not cleaned:
+        raise ValueError(f"{PREFIX} no custom ratio given - type one like '21:10' or '1920x1080'.")
+    parts = re.split(r"[:x/×]", cleaned)
+    if len(parts) == 1:
+        parts.append("1")
+    if len(parts) != 2:
+        raise ValueError(f"{PREFIX} '{text}' is not a ratio - write it as 'width:height'.")
+    try:
+        width, height = float(parts[0]), float(parts[1])
+    except ValueError as exc:
+        raise ValueError(f"{PREFIX} '{text}' is not a ratio - write it as 'width:height'.") from exc
+    if width <= 0 or height <= 0:
+        raise ValueError(f"{PREFIX} a ratio needs two positive numbers; got '{text}'.")
+    return width, height
+
+
+def ratio_label(width: float, height: float) -> str:
+    """The shortest honest 'W:H' for a ratio: 1920x1080 -> 16:9, 2.39 -> 2.39:1."""
+    if float(width).is_integer() and float(height).is_integer():
+        from math import gcd
+
+        divisor = gcd(int(width), int(height)) or 1
+        return f"{int(width) // divisor}:{int(height) // divisor}"
+    scale = height if height else 1.0
+    return f"{round(width / scale, 3):g}:1"
+
+
+def resolution(width: float, height: float, megapixels: float, multiple: int = 8) -> tuple[int, int]:
+    """Pixel size for a ratio and a megapixel target, on a grid of ``multiple``.
+
+    The arithmetic is ComfyUI's own ResolutionSelector, kept identical on purpose: a
+    workflow that swaps one node for the other must get the same numbers back.
+    """
+    import math
+
+    step = max(1, int(multiple))
+    scale = math.sqrt(float(megapixels) * 1024 * 1024 / (float(width) * float(height)))
+    return round(width * scale / step) * step, round(height * scale / step) * step
+
+
 def data_uri(payload: bytes, media_type: str = "image/png") -> str:
     return f"data:{media_type};base64,{base64.b64encode(payload).decode('ascii')}"
 
